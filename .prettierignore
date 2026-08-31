@@ -1,0 +1,10 @@
+dist/
+coverage/
+node_modules/
+package-lock.json
+
+# Markdown is written by hand and stays that way. Prettier rewrites prose
+# emphasis (*this* becomes _this_) and reflows the code samples inside fenced
+# blocks, which in a README documenting exact signatures is churn rather than
+# formatting. §4.4 asks for Prettier on the code; this is the code.
+*.md

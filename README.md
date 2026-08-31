@@ -3,8 +3,9 @@
 JavaScript/TypeScript SDK for [Branch](https://github.com/badger-cash/branch)
 nodes. JavaScript first, because the web client needs it first.
 
-> **Status: placeholder.** Nothing is implemented yet. This README records what
-> the package is for and the two rules that are easy to get wrong.
+> **Status: scaffolded.** The toolchain is in place and the clients are not.
+> This README records what the package is for and the two rules that are
+> expensive to get wrong.
 
 ## What it does
 
@@ -51,6 +52,36 @@ plain queries against the node rather than server-side code. See
 Brokered fields are different: the chain returns only the custodian's name, and
 the plaintext comes from the custodian's API. See
 [branch-indexer](https://github.com/badger-cash/branch-indexer).
+
+## Development
+
+```
+npm install
+npm run check     # typecheck, lint, format:check, test, build
+```
+
+Individually: `npm run typecheck`, `npm run lint`, `npm run format`,
+`npm test` (`npm run test:watch` while working), `npm run build`.
+
+The build emits both ESM and CommonJS. That is not hedging: the Vite front end
+is ESM and the Express backend is CommonJS, and the backend needs this package
+for the server-side `issue_credits` path.
+
+**There is no CI here yet, and that is sequenced rather than forgotten.**
+Decision 4 puts CI on the front end first, then on the branch node once the
+site is stable. Until then `npm run check` is the gate, run by hand.
+
+### The tooling is pinned below latest, deliberately
+
+The workspace runs **Node 18**, which is what the front end's Vite 5 was set
+up against. Current ESLint, TypeScript and Vitest majors have moved to Node
+20 or 22 minimums, so the devDependencies here are held at the last line that
+still runs: ESLint 9, TypeScript 5, Vitest 3.
+
+Do not bump them on their own. Node 18 went out of support in April 2025, so
+the runtime is the thing that needs raising, and raising it is a workspace
+change -- this package, the front end and the indexer together -- not a
+dependency bump in one repo.
 
 ## License
 

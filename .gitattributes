@@ -1,0 +1,15 @@
+# Normalize on commit, check out LF everywhere.
+#
+# This is a Windows checkout with core.autocrlf=true, which would otherwise
+# write CRLF into the working tree. Two things break when it does: shell
+# scripts refuse to run under Linux bash, and any byte-exact comparison
+# between a file here and the same file elsewhere fails on invisible
+# differences. The sibling `branch` repo learned this the expensive way --
+# its migration checksums are sha256 over raw bytes with no newline
+# normalization, so the same file hashed differently on Windows and Linux.
+* text=auto eol=lf
+
+# Binary, never touched.
+*.png binary
+*.jpg binary
+*.ico binary
