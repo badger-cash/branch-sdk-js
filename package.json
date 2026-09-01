@@ -55,5 +55,12 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@trufnetwork/kwil-js": "^0.9.14",
+    "ethers": "^6.17.0"
+  },
+  "overrides": {
+    "lru-cache": "^10.4.3"
   }
 }
