@@ -1,4 +1,4 @@
-import { KwilSigner, NodeKwil, WebKwil } from '@trufnetwork/kwil-js';
+import { KwilSigner, NodeKwil, Utils, WebKwil } from '@trufnetwork/kwil-js';
 
 import type { Types } from '@trufnetwork/kwil-js';
 
@@ -9,6 +9,7 @@ import {
   UnconfirmedTransactionError,
   parseNodeFailure,
 } from './errors.js';
+import { CreditsClient } from './credits.js';
 import { IdentityClient } from './identity.js';
 
 import type { CanonicalAddress } from './address.js';
@@ -25,9 +26,37 @@ export const NAMESPACE = 'main';
  */
 export type ActionInputs = Types.NamedParams;
 
+/**
+ * Declared parameter types, by parameter name.
+ *
+ * kwil infers a type from the JavaScript value, and the inference has no way
+ * to reach NUMERIC: a string infers as `text` and a number as `int8`, so an
+ * action expecting `numeric(78,0)` refuses both. The type has to be stated.
+ */
+// Derived from the constructor's own return type. kwil does not re-export
+// NamedTypes or DataInfo from its public namespace, and deep-importing past
+// the package's `exports` map would break the moment they reorganise.
+export type DataInfo = ReturnType<typeof Utils.DataType.Numeric>;
+export type ActionTypes = Record<string, DataInfo>;
+
+/**
+ * Declare a NUMERIC parameter, e.g. `numeric(78, 0)` for a ledger amount.
+ *
+ * Re-exported so callers never import kwil-js to send a number -- the whole
+ * point of this package is that they should not have to.
+ */
+export function numeric(precision: number, scale: number): DataInfo {
+  return Utils.DataType.Numeric(precision, scale);
+}
+
 export interface KwilLike {
   execute(
-    body: { namespace: string; name: string; inputs: ActionInputs[] },
+    body: {
+      namespace: string;
+      name: string;
+      inputs: ActionInputs[];
+      types?: ActionTypes;
+    },
     signer: KwilSigner,
     synchronous?: boolean
   ): Promise<{ data?: { tx_hash?: string } }>;
@@ -37,6 +66,12 @@ export interface KwilLike {
     body: { namespace: string; name: string; inputs: ActionInputs },
     signer?: KwilSigner
   ): Promise<{ data?: { result?: unknown } }>;
+  // Read paths are plain SELECTs: decision 2b leaves SELECT granted, so browse
+  // and search need no server-side code and no action per query.
+  selectQuery<T extends object>(
+    query: string,
+    params?: Record<string, unknown>
+  ): Promise<{ data?: T[] }>;
 }
 
 export interface ConnectOptions {
@@ -84,6 +119,7 @@ export async function fetchChainId(provider: string): Promise<string> {
  */
 export class BranchClient {
   readonly identity: IdentityClient;
+  readonly credits: CreditsClient;
 
   private constructor(
     private readonly kwil: KwilLike,
@@ -92,6 +128,7 @@ export class BranchClient {
     readonly address: CanonicalAddress
   ) {
     this.identity = new IdentityClient(this);
+    this.credits = new CreditsClient(this);
   }
 
   static async connect(options: ConnectOptions): Promise<BranchClient> {
@@ -125,11 +162,13 @@ export class BranchClient {
    * that is not that envelope propagates untouched, because a node that is
    * unreachable and an action that was refused call for different responses.
    */
-  async write(action: string, inputs: ActionInputs = {}): Promise<string> {
+  async write(action: string, inputs: ActionInputs = {}, types?: ActionTypes): Promise<string> {
     let res;
     try {
       res = await this.kwil.execute(
-        { namespace: NAMESPACE, name: action, inputs: [inputs] },
+        types === undefined
+          ? { namespace: NAMESPACE, name: action, inputs: [inputs] }
+          : { namespace: NAMESPACE, name: action, inputs: [inputs], types },
         this.kwilSigner,
         true
       );
@@ -146,6 +185,19 @@ export class BranchClient {
       throw new UnconfirmedTransactionError(action, 'the node returned no transaction hash');
     }
     return txHash;
+  }
+
+  /**
+   * Run a plain SELECT against the node.
+   *
+   * Unauthenticated by design: on-chain data is public and decision 2b leaves
+   * SELECT granted, which is what lets the whole browse and search surface
+   * exist without server-side code. Anything that must resolve `@caller` needs
+   * an action instead, because a query cannot prove who is asking.
+   */
+  async query<T extends object>(sql: string, params: Record<string, unknown> = {}): Promise<T[]> {
+    const res = await this.kwil.selectQuery<T>(sql, params);
+    return res.data ?? [];
   }
 
   /** Call a view action. Signed, because most of them read `@caller`. */

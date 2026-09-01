@@ -22,8 +22,16 @@ export interface LocalWallet {
   signer: KwilEthSigner;
 }
 
-export async function localWallet(): Promise<LocalWallet> {
-  const wallet = Wallet.createRandom();
+/**
+ * Hardhat's second deterministic account, which migration 90 seeds as the CNMI
+ * Central operator and appoints to the credit-issuer office. Public and
+ * well-known -- it is the same key branch's own e2e harness uses, and the
+ * bootstrap carries a note that it must be replaced before a production chain.
+ */
+export const OPERATOR_KEY = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+
+export async function localWallet(privateKey?: string): Promise<LocalWallet> {
+  const wallet = privateKey === undefined ? Wallet.createRandom() : new Wallet(privateKey);
 
   const provider: Eip1193Provider = {
     request({ method, params }): Promise<unknown> {

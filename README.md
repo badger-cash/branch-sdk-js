@@ -107,6 +107,47 @@ signed. The address is globally unique and permanent, so a revoked one can
 never be registered again by anyone, including its owner. The chain also
 refuses to revoke your only active key rather than let you lock yourself out.
 
+## Credits
+
+```ts
+const balance = await client.credits.balance();   // { units: 250n, decimals: 0 }
+formatAmount(balance);                            // '250'
+const history = await client.credits.history();   // most recent first
+```
+
+**Amounts are `bigint`, never `number`.** `currency_entries.amount` is
+`NUMERIC(78,0)` — an integer of up to 78 digits — and a JS number holds 15 to
+16 significant ones. For most of that range a number is not a rounding risk to
+watch, it is guaranteed loss. `parseAmount` and `formatAmount` convert to and
+from display strings without a float step.
+
+An amount that arrives as a number past `Number.MAX_SAFE_INTEGER` is
+**rejected**, not accepted: the damage happened upstream, and returning it
+would hand back a balance that is quietly wrong.
+
+`issue_credits` is not on this client. It is gated on the credit-issuer office
+and belongs to the server-side path in W5; a method for it here would invite
+the officeholder key into a browser.
+
+### Sending a NUMERIC parameter
+
+kwil infers a parameter's type from the JavaScript value, and **nothing infers
+to NUMERIC** — a string infers as `text`, a number as `int8`, and an action
+expecting `numeric(78,0)` refuses both. Declare it:
+
+```ts
+import { numeric } from '@badger-cash/branch-sdk-js';
+
+await client.write('issue_credits',
+  { $to_address: address, $amount: '250', $reference: 'order-1' },
+  { $amount: numeric(78, 0) });
+```
+
+`selectQuery` has no equivalent — it cannot declare parameter types at all —
+so an `INT8` bound into a plain SELECT has to cross as a number. The client
+checks it against `Number.MAX_SAFE_INTEGER` and throws rather than binding a
+value that would match the wrong row.
+
 ## Reads
 
 On-chain data is public and `SELECT` stays granted, so browse and search are
