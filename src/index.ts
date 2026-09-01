@@ -5,10 +5,9 @@
  * re-exported here; nothing is deep-importable, because `exports` in
  * package.json declares only ".".
  *
- * Empty for now. The clients land on top of this scaffold:
- *   - the Privy signer adapter (#3)
- *   - address normalization at the query boundary (#4)
- *   - identity (#5), credits (#6), listings and read paths (#7)
+ * The clients land on top of this: identity (#5), credits (#6), listings and
+ * read paths (#7). Address normalization (#4) comes first.
  */
 
-export {};
+export { signerFromPrivyWallet } from './signer.js';
+export type { KwilEthSigner, PrivyEthereumWallet } from './signer.js';

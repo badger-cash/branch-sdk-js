@@ -37,6 +37,22 @@ payload *bytes*. Non-UTF-8 bytes pushed through a string parameter are mangled.
 `personal_sign` over hex data, and ethers' `signMessage(Uint8Array)` which
 prefixes with the byte length, both handle it correctly.
 
+The SDK does this for you:
+
+```ts
+import { signerFromPrivyWallet } from '@badger-cash/branch-sdk-js';
+import { KwilSigner, WebKwil } from '@trufnetwork/kwil-js';
+
+const signer = await signerFromPrivyWallet(wallet);   // from Privy's useWallets()
+const kwil = new WebKwil({ kwilProvider, chainId });
+await kwil.execute({ namespace: 'main', name: 'register', inputs: [...] },
+                   new KwilSigner(signer, wallet.address), true);
+```
+
+It takes the wallet and reaches for the provider itself, so a hook result
+cannot be passed by mistake — doing so throws an error naming this problem
+rather than failing later at signature verification.
+
 **Rule 2 — normalize every address lookup to `lower(@caller)`.** `@caller` for
 an EVM signer is EIP-55 checksummed and therefore mixed case, while
 `person_keys.address` is stored canonical lowercase. A bare `address = @caller`
@@ -62,6 +78,11 @@ npm run check     # typecheck, lint, format:check, test, build
 
 Individually: `npm run typecheck`, `npm run lint`, `npm run format`,
 `npm test` (`npm run test:watch` while working), `npm run build`.
+
+`npm test` never touches the network. `npm run test:integration` runs the suite
+that needs a live node; point it at one with `BRANCH_PROVIDER`, and note that
+an explicitly set provider which cannot be reached is a **failure**, not a
+skip. Standing a node up is documented in `E:\kwil-infra\RUNBOOK.md`.
 
 The build emits both ESM and CommonJS. That is not hedging: the Vite front end
 is ESM and the Express backend is CommonJS, and the backend needs this package

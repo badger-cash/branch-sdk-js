@@ -35,10 +35,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
@@ -55,5 +56,12 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@trufnetwork/kwil-js": "^0.9.14",
+    "ethers": "^6.17.0"
+  },
+  "overrides": {
+    "lru-cache": "^10.4.3"
   }
 }

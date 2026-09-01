@@ -23,5 +23,5 @@
     "esModuleInterop": true,
     "resolveJsonModule": true
   },
-  "include": ["src", "*.config.ts", "eslint.config.js"]
+  "include": ["src", "tests", "*.config.ts", "eslint.config.js"]
 }
