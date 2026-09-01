@@ -77,6 +77,36 @@ and `ed25519` (64) are checked for length **and** alphabet — the database
 checks only length, which is
 [badger-cash/branch#26](https://github.com/badger-cash/branch/issues/26).
 
+## Identity
+
+```ts
+import { BranchClient, signerFromPrivyWallet } from '@badger-cash/branch-sdk-js';
+
+const signer = await signerFromPrivyWallet(wallet);
+const client = await BranchClient.connect({
+  provider: 'https://node.example',       // chainId is read from the node
+  address: wallet.address,
+  signer,
+});
+
+await client.identity.register('Ada Lovelace');
+const me = await client.identity.whoami();       // null if this key is nobody
+const keys = await client.identity.myKeys();     // pending | active | revoked
+```
+
+**Every write reports what actually happened.** kwil compares the committed
+result code and throws a bare `Error` whose message is a raw JSON envelope; the
+client parses it and rethrows an `ActionFailedError` carrying `action`, `code`,
+`log` and `txHash` as fields. A transport failure is left alone and propagates
+as itself — one is worth retrying, the other never will be.
+
+**Revocation is permanent.** There is no action that re-enables a revoked key,
+and the schema is built so there could not be one: `person_keys` is append-only
+history, and rewriting it would silently re-attribute everything the key ever
+signed. The address is globally unique and permanent, so a revoked one can
+never be registered again by anyone, including its owner. The chain also
+refuses to revoke your only active key rather than let you lock yourself out.
+
 ## Reads
 
 On-chain data is public and `SELECT` stays granted, so browse and search are
