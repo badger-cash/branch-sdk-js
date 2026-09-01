@@ -11,6 +11,7 @@ import {
 } from './errors.js';
 import { CreditsClient } from './credits.js';
 import { IdentityClient } from './identity.js';
+import { ListingsClient } from './listings.js';
 
 import type { CanonicalAddress } from './address.js';
 import type { KwilEthSigner } from './signer.js';
@@ -120,6 +121,7 @@ export async function fetchChainId(provider: string): Promise<string> {
 export class BranchClient {
   readonly identity: IdentityClient;
   readonly credits: CreditsClient;
+  readonly listings: ListingsClient;
 
   private constructor(
     private readonly kwil: KwilLike,
@@ -129,6 +131,7 @@ export class BranchClient {
   ) {
     this.identity = new IdentityClient(this);
     this.credits = new CreditsClient(this);
+    this.listings = new ListingsClient(this);
   }
 
   static async connect(options: ConnectOptions): Promise<BranchClient> {

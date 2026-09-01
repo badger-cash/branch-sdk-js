@@ -20,8 +20,20 @@ export type { ActionInputs, ActionTypes, ConnectOptions, DataInfo, KwilLike } fr
 export { CreditsClient } from './credits.js';
 export type { CreditEntry, CreditEntryKind, HistoryOptions } from './credits.js';
 
-export { formatAmount, parseAmount } from './amount.js';
-export type { CreditAmount } from './amount.js';
+export { formatAmount, parseAmount, toAmount } from './amount.js';
+export type { CreditAmount, FormatOptions } from './amount.js';
+
+export { LISTING_SCALE, ListingsClient } from './listings.js';
+export type {
+  BrowseOptions,
+  CreateListingInput,
+  Listing,
+  ListingOutcome,
+  ListingSummary,
+  OwnListing,
+  PageCursor,
+  SearchOptions,
+} from './listings.js';
 
 export { IdentityClient } from './identity.js';
 export type { KeyRecord, KeyStatus, Person } from './identity.js';
