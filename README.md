@@ -3,8 +3,9 @@
 JavaScript/TypeScript SDK for [Branch](https://github.com/badger-cash/branch)
 nodes. JavaScript first, because the web client needs it first.
 
-> **Status: placeholder.** Nothing is implemented yet. This README records what
-> the package is for and the two rules that are easy to get wrong.
+> **Status: scaffolded.** The toolchain is in place and the clients are not.
+> This README records what the package is for and the two rules that are
+> expensive to get wrong.
 
 ## What it does
 
@@ -51,6 +52,59 @@ plain queries against the node rather than server-side code. See
 Brokered fields are different: the chain returns only the custodian's name, and
 the plaintext comes from the custodian's API. See
 [branch-indexer](https://github.com/badger-cash/branch-indexer).
+
+## Development
+
+```
+npm install
+npm run check     # typecheck, lint, format:check, test, build
+```
+
+Individually: `npm run typecheck`, `npm run lint`, `npm run format`,
+`npm test` (`npm run test:watch` while working), `npm run build`.
+
+The build emits both ESM and CommonJS. That is not hedging: the Vite front end
+is ESM and the Express backend is CommonJS, and the backend needs this package
+for the server-side `issue_credits` path.
+
+**There is no CI here yet, and that is sequenced rather than forgotten.**
+Decision 4 puts CI on the front end first, then on the branch node once the
+site is stable. Until then `npm run check` is the gate, run by hand.
+
+## Node 18 is a supported target
+
+**This package runs on Node 18 or higher, and that is a commitment rather
+than an accident of what happened to be installed.** Branch is going into
+government infrastructure, and government infrastructure upgrades late. A
+dependency that quietly needs Node 20 does not fail in CI; it fails on
+someone else's server, after install, at the point where the only remedy is
+"upgrade your runtime" and the answer is no.
+
+So it is asserted, not assumed. `src/engines.test.ts` walks the whole
+production tree from the lockfile -- transitive dependencies included -- and
+fails, naming the package, if anything shipped declares a floor above Node
+18. The risk is never the dependency chosen deliberately. It is the third one
+down that a chosen dependency pulled in.
+
+**Dev dependencies are exempt, and that exemption is what makes the floor
+affordable.** ESLint 10, TypeScript 6 and Vitest 4 have all left Node 18
+behind, so the toolchain here is held one major back -- ESLint 9, TypeScript
+5, Vitest 3. None of it reaches anyone who installs the package. What a
+contributor needs to run the linter and what a consumer needs to run the SDK
+are different questions, and only the second one is a promise.
+
+Contributing does want Node **18.18+** rather than plain 18.0: several ESLint
+packages set their floor there. Consumers are unaffected.
+
+Two consequences worth keeping in view:
+
+- The pins are floors, not ceilings. Every one of them declares support well
+  past 18, so running the toolchain on Node 20, 22 or 24 works today. Holding
+  18 costs nothing in the other direction.
+- Node 18 left upstream support in April 2025. Security patches for the
+  runtime are somebody's problem regardless, and supporting it here does not
+  make that go away -- it means deployments stuck on 18 get a working SDK
+  rather than an install error.
 
 ## License
 
