@@ -51,6 +51,9 @@ function fakeKwil(opts: {
       calls.push({ kind: 'call', name: body.name, inputs: body.inputs });
       return Promise.resolve({ data: { result: opts.callResult ?? [] } });
     },
+    selectQuery(): Promise<{ data?: never[] }> {
+      return Promise.resolve({ data: [] });
+    },
   };
   return { kwil, calls };
 }
