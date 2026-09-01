@@ -148,6 +148,49 @@ so an `INT8` bound into a plain SELECT has to cross as a number. The client
 checks it against `Number.MAX_SAFE_INTEGER` and throws rather than binding a
 value that would match the wrong row.
 
+## Listings
+
+```ts
+await client.listings.create({ make: 'Toyota', model: 'Corolla', year: 2018,
+  price: '12750', priceCurrency: 'credits', durationDays: 30, location: 'Susupe',
+  contactHmacHex, vin: '1HGBH41JXMN109186', mileage: '90000',
+  description: 'Runs well.', photos: [] });
+
+const page  = await client.listings.browse({ limit: 20 });
+const next  = await client.listings.browse({ limit: 20, after: cursorFrom(page) });
+const hits  = await client.listings.search({ make: 'toyota', yearFrom: 2015, maxPrice: '20000' });
+const one   = await client.listings.get(id);
+const mine  = await client.listings.mine();
+await client.listings.close(id, 'sold');
+```
+
+**Pagination keys on `(created_at, id)`, not on the timestamp.** `created_at`
+is `@block_timestamp`, so every listing minted in one block shares a value and
+paging on it alone repeats or skips rows.
+
+**`make`, `model` and `vin` are folded to lower case on write by the action**,
+so a search stays a bare equality on `metadata_lookup_idx`. Putting `lower()`
+in the query instead would take every browse off the index — kwil has no
+expression indexes. The seller's own spelling survives in the title.
+
+**Prices are exact.** `value_number` is `NUMERIC(38,10)` and arrives as a
+decimal string of the value, not as scaled units; the client parses it at the
+column's scale. `formatAmount(price, { trim: true })` renders `'12750'` rather
+than `'12750.0000000000'`.
+
+**Browse hides expired listings; `get` does not.** A browse is a shop window
+and an advertisement whose paid term ran out has no business in it. `get` is a
+record lookup — someone following a link to a listing that ended should be
+told it ended, not that it never existed.
+
+### One signing key means one transaction at a time
+
+kwil account nonces are sequential, so two writes signed by the same key
+concurrently produce `invalid nonce for account ...: got 63, expected 64`. This
+is a property of the chain rather than of any client. It matters most for the
+server-side `issue_credits` path in W5, where one officeholder key serves every
+purchase: those writes have to be serialised.
+
 ## Reads
 
 On-chain data is public and `SELECT` stays granted, so browse and search are

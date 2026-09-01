@@ -71,6 +71,15 @@ describe('formatAmount', () => {
     expect(formatAmount({ units: -12345n, decimals: 2 })).toBe('-123.45');
   });
 
+  it('trims trailing zeros when asked, without changing the value', () => {
+    // A listing price is NUMERIC(38,10), so exact is '12750.0000000000'.
+    const price = { units: 127500000000000n, decimals: 10 };
+    expect(formatAmount(price)).toBe('12750.0000000000');
+    expect(formatAmount(price, { trim: true })).toBe('12750');
+    expect(formatAmount({ units: 127505000000000n, decimals: 10 }, { trim: true })).toBe('12750.5');
+    expect(formatAmount({ units: -5n, decimals: 2 }, { trim: true })).toBe('-0.05');
+  });
+
   it('formats a value no float could represent', () => {
     const units = BigInt('123456789012345678901234567890');
     expect(formatAmount({ units, decimals: 2 })).toBe('1234567890123456789012345678.90');

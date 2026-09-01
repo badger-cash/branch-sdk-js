@@ -76,15 +76,61 @@ function parseInteger(text: string, field: string): bigint {
   return BigInt(whole ?? '0');
 }
 
+export interface FormatOptions {
+  /**
+   * Drop trailing zeros in the fraction, and the point if nothing survives.
+   *
+   * A listing price is NUMERIC(38,10), so an exact rendering of $12,750 is
+   * '12750.0000000000'. That is correct and unreadable. Trimming is a display
+   * choice and never changes the value, which stays a bigint either way.
+   */
+  trim?: boolean;
+}
+
+/**
+ * Read a scaled NUMERIC off the wire.
+ *
+ * The distinction from `toUnits` is easy to get wrong and I got it wrong: a
+ * NUMERIC arrives as a decimal string of the VALUE, not as pre-scaled integer
+ * units. NUMERIC(78,0) has scale 0, so for a credit balance the two are the
+ * same number and `toUnits` is right. NUMERIC(38,10) does not: a price of
+ * 12750 arrives as '12750', and treating that as scale-10 units renders it as
+ * 0.000001275.
+ *
+ * So the text is parsed at the column's scale instead.
+ */
+export function toAmount(value: unknown, decimals: number, field: string): CreditAmount {
+  if (decimals === 0) return { units: toUnits(value, field), decimals };
+
+  let text: string;
+  if (typeof value === 'string') text = value;
+  else if (typeof value === 'number' || typeof value === 'bigint') text = value.toString();
+  else if (typeof value === 'object' && value !== null) {
+    text = (value as { toString: () => string }).toString();
+    if (text === '[object Object]') {
+      throw new AmountPrecisionError(`${field} is not a number: ${JSON.stringify(value)}`);
+    }
+  } else {
+    throw new AmountPrecisionError(`${field} arrived as ${typeof value}, which is not a number`);
+  }
+
+  return parseAmount(text, decimals);
+}
+
 /** Render an amount for display, without going through a float. */
-export function formatAmount(amount: CreditAmount): string {
+export function formatAmount(amount: CreditAmount, options: FormatOptions = {}): string {
   const { units, decimals } = amount;
   if (decimals === 0) return units.toString();
 
   const negative = units < 0n;
   const digits = (negative ? -units : units).toString().padStart(decimals + 1, '0');
   const whole = digits.slice(0, digits.length - decimals);
-  const fraction = digits.slice(digits.length - decimals);
+  let fraction = digits.slice(digits.length - decimals);
+
+  if (options.trim === true) {
+    fraction = fraction.replace(/0+$/, '');
+    if (fraction === '') return `${negative ? '-' : ''}${whole}`;
+  }
   return `${negative ? '-' : ''}${whole}.${fraction}`;
 }
 
