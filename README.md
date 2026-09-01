@@ -59,6 +59,24 @@ an EVM signer is EIP-55 checksummed and therefore mixed case, while
 silently matches nothing. This belongs in the SDK so no caller has to remember
 it.
 
+It is enforced rather than remembered. `canonicalAddress()` is the only way to
+obtain a `CanonicalAddress`, and every lookup takes that type — so a raw
+string will not compile:
+
+```ts
+import { canonicalAddress } from '@badger-cash/branch-sdk-js';
+
+canonicalAddress('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
+// -> '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+```
+
+It also validates. A mixed-case EVM address is checked against its EIP-55
+checksum, so a mistyped one is rejected instead of being folded into a
+well-formed address for an account nobody holds. `secp256k1` (66 characters)
+and `ed25519` (64) are checked for length **and** alphabet — the database
+checks only length, which is
+[badger-cash/branch#26](https://github.com/badger-cash/branch/issues/26).
+
 ## Reads
 
 On-chain data is public and `SELECT` stays granted, so browse and search are
