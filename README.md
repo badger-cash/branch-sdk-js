@@ -12,6 +12,35 @@ nodes. JavaScript first, because the web client needs it first.
 Wraps a Branch node's action surface — identity, credits, listings — behind a
 typed client, over `@trufnetwork/kwil-js`.
 
+## Installing
+
+Not on a registry yet, so install from git:
+
+```
+npm install github:badger-cash/branch-sdk-js#v0.1.0
+```
+
+`dist/` is gitignored, so a git install would otherwise fetch a package whose
+`files` and `exports` point at a directory that is not there. The `prepare`
+script closes that: npm runs it after cloning a git dependency, and installs the
+dev dependencies needed to do the build. Nothing has to be committed that a
+build can produce.
+
+**Pin the tag.** Without one, every consumer silently tracks whatever `main` is,
+which is how a front end acquires an SDK change nobody decided to ship.
+
+When this package goes to npm, consumers change one line —
+
+```diff
+- "@badger-cash/branch-sdk-js": "github:badger-cash/branch-sdk-js#v0.1.0"
++ "@badger-cash/branch-sdk-js": "^0.1.0"
+```
+
+— and no source at all, because the package name is what `import` statements
+name and it is the same either way. `prepare` stays harmless: npm does not run
+it for registry installs, where the tarball already carries `dist/`. It does run
+on `npm publish`, which means a stale build cannot be published.
+
 ## Signing
 
 kwil's Ethereum signer is duck-typed to a single method:

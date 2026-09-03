@@ -1,6 +1,6 @@
 {
   "name": "@badger-cash/branch-sdk-js",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Typed JavaScript/TypeScript client for Branch nodes",
   "license": "MIT",
   "repository": {
@@ -32,6 +32,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
