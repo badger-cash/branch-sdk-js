@@ -128,7 +128,7 @@ describe('identity client', () => {
       (await first.identity.whoami())?.personId
     );
 
-    await second.identity.revokeKey(first.address);
+    await second.identity.revokeKey(first.address!);
 
     const afterRevoke = await second.identity.myKeys();
     const revoked = afterRevoke.find((k) => k.address === first.address);
@@ -144,6 +144,6 @@ describe('identity client', () => {
     const client = await connect();
     await client.identity.register('Sole Key');
 
-    await expect(client.identity.revokeKey(client.address)).rejects.toThrow(/only key/);
+    await expect(client.identity.revokeKey(client.address!)).rejects.toThrow(/only key/);
   }, 60_000);
 });

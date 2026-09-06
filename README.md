@@ -41,6 +41,26 @@ name and it is the same either way. `prepare` stays harmless: npm does not run
 it for registry installs, where the tarball already carries `dist/`. It does run
 on `npm publish`, which means a stale build cannot be published.
 
+## Reading without signing in
+
+Browse and search are plain SELECTs, so nobody has to sign to look at a listing:
+
+```ts
+const client = await BranchClient.connectReadOnly({ provider });
+const cars = await client.listings.search({ make: 'Toyota', yearFrom: 2015 });
+```
+
+Decision 2b leaves `SELECT` granted, which is the whole reason the browse and
+search surface needs no server-side code. Requiring a signer for it would have
+meant an anonymous visitor could not look at a classified advertisement without
+first creating an account — backwards for a marketplace, and the reason this
+exists.
+
+`query` is the whole of a read-only client. `read` and `write` reject on it and
+say why: a view action is *signed*, because most of them read `@caller`, so that
+is a real limit rather than an oversight. `canSign` distinguishes the two, and
+`address` is `null`.
+
 ## Signing
 
 kwil's Ethereum signer is duck-typed to a single method:

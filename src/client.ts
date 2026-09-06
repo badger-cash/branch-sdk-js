@@ -75,6 +75,16 @@ export interface KwilLike {
   ): Promise<{ data?: T[] }>;
 }
 
+/** What a read-only client needs, which is a node and nothing else. */
+export interface ReadOnlyOptions {
+  /** The node's RPC endpoint, e.g. `http://127.0.0.1:8484`. */
+  provider: string;
+  /** Read from the node when omitted. */
+  chainId?: string;
+  /** Substitute a kwil client. Tests use this; callers should not need to. */
+  kwil?: KwilLike;
+}
+
 export interface ConnectOptions {
   /** The node's RPC endpoint, e.g. `http://127.0.0.1:8484`. */
   provider: string;
@@ -125,9 +135,14 @@ export class BranchClient {
 
   private constructor(
     private readonly kwil: KwilLike,
-    private readonly kwilSigner: KwilSigner,
-    /** The caller's own address, in the form `person_keys` stores. */
-    readonly address: CanonicalAddress
+    /**
+     * Absent on a read-only client. Plain SELECTs need no signature, and view
+     * actions do -- so this being null is what distinguishes the two, and
+     * `read` says so rather than failing somewhere inside kwil.
+     */
+    private readonly kwilSigner: KwilSigner | null,
+    /** The caller's own address, or null when nobody is signing. */
+    readonly address: CanonicalAddress | null
   ) {
     this.identity = new IdentityClient(this);
     this.credits = new CreditsClient(this);
@@ -153,6 +168,34 @@ export class BranchClient {
   }
 
   /**
+   * A client for the public read surface, with nobody signing.
+   *
+   * Browse and search are plain SELECTs against the node -- Decision 2b leaves
+   * `SELECT` granted, which is the whole reason "the entire browse and search
+   * surface needs no server-side code". None of it touches a signer, and
+   * requiring one meant an anonymous visitor could not look at a classified ad
+   * without first creating an account, which is exactly backwards for a
+   * marketplace.
+   *
+   * `write` and `read` reject on this client. `query` is the whole of it.
+   */
+  static async connectReadOnly(options: ReadOnlyOptions): Promise<BranchClient> {
+    const chainId = options.chainId ?? (await fetchChainId(options.provider));
+    const kwil =
+      options.kwil ??
+      (typeof globalThis.window === 'undefined'
+        ? new NodeKwil({ kwilProvider: options.provider, chainId })
+        : new WebKwil({ kwilProvider: options.provider, chainId }));
+
+    return new BranchClient(kwil, null, null);
+  }
+
+  /** Whether this client can sign. False for `connectReadOnly`. */
+  get canSign(): boolean {
+    return this.kwilSigner !== null;
+  }
+
+  /**
    * Send a transaction and turn a refusal into something a caller can use.
    *
    * `execute(..., true)` broadcasts with COMMIT, so kwil waits for the block
@@ -166,6 +209,13 @@ export class BranchClient {
    * unreachable and an action that was refused call for different responses.
    */
   async write(action: string, inputs: ActionInputs = {}, types?: ActionTypes): Promise<string> {
+    if (this.kwilSigner === null) {
+      throw new BranchError(
+        `${action} is a transaction and needs a signer. This client came from ` +
+          'connectReadOnly, which exists for the public read surface only.'
+      );
+    }
+
     let res;
     try {
       res = await this.kwil.execute(
@@ -205,6 +255,12 @@ export class BranchClient {
 
   /** Call a view action. Signed, because most of them read `@caller`. */
   async read<T>(action: string, inputs: ActionInputs = {}): Promise<T[]> {
+    if (this.kwilSigner === null) {
+      throw new BranchError(
+        `${action} is a view action and needs a signer -- most of them read @caller. ` +
+          'This client came from connectReadOnly; use connect to call one.'
+      );
+    }
     const res = await this.kwil.call(
       { namespace: NAMESPACE, name: action, inputs },
       this.kwilSigner
