@@ -183,11 +183,60 @@ export class ListingsClient {
     });
   }
 
-  /** One advertisement, in full. Null when nothing has that id. */
+  /**
+   * One advertisement, in full. Null when nothing has that id.
+   *
+   * A PLAIN SELECT RATHER THAN get_listing, and the difference is who can call
+   * it. `get_listing` is a view action, view actions are signed, and a signed
+   * read means nobody could open a listing without an account -- the same
+   * funnel problem `connectReadOnly` exists to avoid, one page further in.
+   *
+   * It costs nothing to avoid: `get_listing` has no `@caller` in it. It is a
+   * pivot over public tables, and Decision 2b leaves SELECT granted, so the
+   * pivot can happen here. The projection below is that action's, join for
+   * join, including `contact_via` -- which is the custodian's NAME and never
+   * the commitment, because publishing the HMAC "would invite clients to treat
+   * it as an identifier for the person".
+   */
   async get(listingId: bigint | number): Promise<Listing | null> {
-    const rows = await this.client.read<DetailRow>('get_listing', {
-      $token_id: asActionInt(listingId),
-    });
+    const rows = await this.client.query<DetailRow>(
+      `SELECT t.id AS listing_id, t.name AS title, st.name AS state,
+              p.display_name AS seller,
+              mk.value_text AS make, mo.value_text AS model,
+              myv.value_number AS year, pr.value_number AS price,
+              cu.value_text AS currency, lo.value_text AS location,
+              mi.value_number AS mileage, vi.value_text AS vin,
+              de.value_text AS description, ph.value_json AS photos,
+              cg.name AS contact_via, t.created_at AS listed_at
+         FROM tokens t
+         JOIN token_class_states st ON st.id = t.current_state_id
+         JOIN people p              ON p.id = t.issuer_person_id
+         LEFT JOIN metadata mk ON mk.entity_type = 'token' AND mk.entity_id = t.id
+                              AND mk.identifier = 'make' AND mk.deleted_at IS NULL
+         LEFT JOIN metadata mo ON mo.entity_type = 'token' AND mo.entity_id = t.id
+                              AND mo.identifier = 'model' AND mo.deleted_at IS NULL
+         LEFT JOIN metadata myv ON myv.entity_type = 'token' AND myv.entity_id = t.id
+                               AND myv.identifier = 'year' AND myv.deleted_at IS NULL
+         LEFT JOIN metadata pr ON pr.entity_type = 'token' AND pr.entity_id = t.id
+                              AND pr.identifier = 'price' AND pr.deleted_at IS NULL
+         LEFT JOIN metadata cu ON cu.entity_type = 'token' AND cu.entity_id = t.id
+                              AND cu.identifier = 'price_currency' AND cu.deleted_at IS NULL
+         LEFT JOIN metadata lo ON lo.entity_type = 'token' AND lo.entity_id = t.id
+                              AND lo.identifier = 'location' AND lo.deleted_at IS NULL
+         LEFT JOIN metadata mi ON mi.entity_type = 'token' AND mi.entity_id = t.id
+                              AND mi.identifier = 'mileage' AND mi.deleted_at IS NULL
+         LEFT JOIN metadata vi ON vi.entity_type = 'token' AND vi.entity_id = t.id
+                              AND vi.identifier = 'vin' AND vi.deleted_at IS NULL
+         LEFT JOIN metadata de ON de.entity_type = 'token' AND de.entity_id = t.id
+                              AND de.identifier = 'description' AND de.deleted_at IS NULL
+         LEFT JOIN metadata ph ON ph.entity_type = 'token' AND ph.entity_id = t.id
+                              AND ph.identifier = 'photos' AND ph.deleted_at IS NULL
+         LEFT JOIN metadata ct ON ct.entity_type = 'token' AND ct.entity_id = t.id
+                              AND ct.identifier = 'contact' AND ct.deleted_at IS NULL
+         LEFT JOIN groups cg   ON cg.id = ct.custodian_group_id
+        WHERE t.id = $token_id AND t.deleted_at IS NULL`,
+      { $token_id: asQueryInt(BigInt(listingId)) }
+    );
     const row = rows[0];
     if (!row) return null;
 

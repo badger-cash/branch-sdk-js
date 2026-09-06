@@ -49,6 +49,12 @@ async function connect(
     ): Promise<{ data?: T[] }> {
       queries.push({ sql: query, params: params ?? {} });
       if (query.includes('token_classes')) return Promise.resolve({ data: CLASS_ROW as T[] });
+      // `get` is a plain SELECT now rather than the get_listing view action, so
+      // that a listing can be opened without signing in. It is recognised by
+      // the join no other read makes.
+      if (query.includes('token_class_states st')) {
+        return Promise.resolve({ data: (detail ? [detail] : []) as T[] });
+      }
       return Promise.resolve({ data: rows as T[] });
     },
   };
