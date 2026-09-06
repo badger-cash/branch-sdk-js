@@ -56,6 +56,11 @@ meant an anonymous visitor could not look at a classified advertisement without
 first creating an account — backwards for a marketplace, and the reason this
 exists.
 
+Opening one works too — `listings.get` is a plain SELECT for the same reason.
+`get_listing` is a view action and view actions are signed, so routing detail
+through it meant a visitor could see the grid and not the car. The action has no
+`@caller` in it, so the pivot happens client-side instead, join for join.
+
 `query` is the whole of a read-only client. `read` and `write` reject on it and
 say why: a view action is *signed*, because most of them read `@caller`, so that
 is a real limit rather than an oversight. `canSign` distinguishes the two, and

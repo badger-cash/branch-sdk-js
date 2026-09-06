@@ -54,6 +54,43 @@ describe('connectReadOnly', () => {
     expect(kwil.call).not.toHaveBeenCalled();
   });
 
+  it('opens a listing, which is a page further in than browse', async () => {
+    // get used to call the get_listing view action, and view actions are
+    // signed -- so a visitor could see the grid and not the car. get_listing
+    // has no @caller in it, so the pivot happens here instead.
+    const kwil = fakeKwil();
+    kwil.selectQuery.mockResolvedValue({
+      data: [
+        {
+          listing_id: 42,
+          title: '2018 Toyota Corolla',
+          state: 'active',
+          seller: 'Ada Lovelace',
+          make: 'toyota',
+          model: 'corolla',
+          year: 2018,
+          price: '12750',
+          currency: 'credits',
+          location: 'Susupe',
+          mileage: 90000,
+          vin: '1hgbh41jxmn109186',
+          description: 'Runs well.',
+          photos: '[]',
+          contact_via: 'CNMI Central',
+          listed_at: 1788224916,
+        },
+      ],
+    });
+    const client = await BranchClient.connectReadOnly(options(kwil));
+
+    const listing = await client.listings.get(42);
+    expect(listing?.title).toBe('2018 Toyota Corolla');
+    // The custodian's name, never the commitment.
+    expect(listing?.contactVia).toBe('CNMI Central');
+    expect(listing?.price.units).toBe(127500000000000n);
+    expect(kwil.call).not.toHaveBeenCalled();
+  });
+
   it('refuses view actions, and says why', async () => {
     // A view action is signed because most of them read @caller, so this is a
     // real limit rather than an oversight. Failing here beats failing inside
