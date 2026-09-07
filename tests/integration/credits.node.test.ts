@@ -201,4 +201,77 @@ describe('credits client', () => {
     expect(summed).toBe(balance.units);
     expect(balance.units).toBe(60n);
   }, 120_000);
+  /**
+   * The reference is on the SETTLEMENT, and this is the trap.
+   *
+   * `issue_credits` takes a `$reference` -- a PayPal capture id, a bank
+   * reference -- and passes it to `open_settlement`. It does NOT reach
+   * `currency_entries.memo`, which carries the literal the calling action
+   * chose. So reading `memo` for a capture id returns `credit purchase` every
+   * time, and nothing about that looks wrong: a string comes back either way.
+   *
+   * Decision 2 makes the chain the audit log, so the link between a dollar and
+   * a credit has to be legible from the ledger. This is where it lives.
+   */
+  it('carries the payment reference off the settlement, not the memo', async () => {
+    if (!requireNode()) return;
+    const user = await newUser('Receipt User');
+    const operator = await connect(OPERATOR_KEY);
+
+    // Unique per run, so finding it proves the join rather than proving that
+    // some string exists.
+    const reference = `capture-${Date.now().toString(36)}`;
+    await operator.write(
+      'issue_credits',
+      { $to_address: user.address, $amount: '40', $reference: reference },
+      AMOUNT_IS_NUMERIC
+    );
+
+    const [entry] = await user.credits.history();
+    expect(entry?.reference).toBe(reference);
+    expect(entry?.settlementNote).toBe('credit issuance');
+    // What the memo actually is, pinned so the distinction cannot quietly rot.
+    expect(entry?.memo).not.toBe(reference);
+  }, 90_000);
+
+  /**
+   * A LEFT JOIN, not a JOIN, and an entry with no reference proves it.
+   *
+   * `create_listing` opens its settlement with a null reference -- no money
+   * moved outside the ledger, so there is nothing to reference. An inner join
+   * would still return the row, but a spend whose settlement were ever missing
+   * would vanish from a statement that is meant to be total.
+   */
+  it('leaves the reference null when no money moved off-chain', async () => {
+    if (!requireNode()) return;
+    const user = await newUser('Spending User');
+    const operator = await connect(OPERATOR_KEY);
+
+    await operator.write(
+      'issue_credits',
+      { $to_address: user.address, $amount: '20', $reference: 'fund-the-spend' },
+      AMOUNT_IS_NUMERIC
+    );
+
+    await user.listings.create({
+      make: 'Toyota',
+      model: 'Corolla',
+      year: 2019,
+      price: '9500',
+      priceCurrency: 'credits',
+      durationDays: 30,
+      location: 'Susupe',
+      contactHmacHex: 'a'.repeat(64),
+      vin: `STMT${Date.now().toString(36).toUpperCase()}`,
+      mileage: '80000',
+      description: 'statement probe',
+    });
+
+    const history = await user.credits.history();
+    const fee = history.find((entry) => entry.settlementNote === 'listing publication');
+
+    expect(fee, 'the listing fee did not appear on the statement').toBeTruthy();
+    expect(fee?.reference).toBeNull();
+    expect(fee?.direction).toBe('debit');
+  }, 120_000);
 });

@@ -15,7 +15,35 @@ export interface CreditEntry {
   amount: CreditAmount;
   /** Whether this entry added to the caller's balance or took from it. */
   direction: 'credit' | 'debit';
+  /**
+   * The entry's own memo, which is a LITERAL rather than anything caller-supplied.
+   *
+   * `ledger_transfer` writes what the calling action passed it, and the actions
+   * pass constants: `credit purchase`, `listing fee`. It says what kind of
+   * movement this is, and deliberately not which one.
+   */
   memo: string | null;
+  /**
+   * What the payment was, when there was one. THIS IS THE RECEIPT.
+   *
+   * `issue_credits` takes a `$reference` -- a PayPal capture id, a bank
+   * reference -- and it lands on the SETTLEMENT rather than on the entry, which
+   * is a trap worth naming: reading `memo` and expecting a capture id gets the
+   * literal `credit purchase` every time, and the mistake is invisible because
+   * a string comes back either way.
+   *
+   * Null for anything that did not come from an off-chain payment. A listing
+   * fee has no reference because no money moved outside the ledger.
+   */
+  reference: string | null;
+  /**
+   * Why the settlement was opened: `credit issuance`, `listing publication`.
+   *
+   * The envelope's own description, and the only field that says what the
+   * movement was FOR. Invariant 15 puts a payment and the thing it paid for in
+   * one settlement, so this is the label on that envelope.
+   */
+  settlementNote: string | null;
   occurredAt: Date;
 }
 
@@ -37,6 +65,8 @@ interface EntryRow {
   created_at: unknown;
   from_holder_id: unknown;
   to_holder_id: unknown;
+  settlement_reference: unknown;
+  settlement_note: unknown;
 }
 
 /**
@@ -88,9 +118,12 @@ export class CreditsClient {
     const limit = options.limit ?? 50;
     const rows = await this.client.query<EntryRow>(
       `SELECT e.id, e.kind, e.amount, e.memo, e.created_at,
-              e.from_holder_id, e.to_holder_id
+              e.from_holder_id, e.to_holder_id,
+              s.reference AS settlement_reference,
+              s.note      AS settlement_note
          FROM currency_entries e
          JOIN currencies c ON c.id = e.currency_id
+         LEFT JOIN settlements s ON s.id = e.settlement_id
         WHERE c.code = 'credits'
           AND (e.to_holder_id = $holder OR e.from_holder_id = $holder)
         ORDER BY e.created_at DESC, e.id DESC
@@ -109,6 +142,8 @@ export class CreditsClient {
         amount: { units: toUnits(row.amount, 'amount'), decimals },
         direction: toHolder !== null && toHolder === me.holderId ? 'credit' : 'debit',
         memo: typeof row.memo === 'string' ? row.memo : null,
+        reference: typeof row.settlement_reference === 'string' ? row.settlement_reference : null,
+        settlementNote: typeof row.settlement_note === 'string' ? row.settlement_note : null,
         occurredAt: new Date(Number(toUnits(row.created_at, 'created_at')) * 1000),
       };
     });
