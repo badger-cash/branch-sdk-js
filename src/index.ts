@@ -27,6 +27,7 @@ export { LISTING_SCALE, ListingsClient } from './listings.js';
 export type {
   BrowseOptions,
   CreateListingInput,
+  FeeTier,
   Listing,
   ListingOutcome,
   ListingSummary,

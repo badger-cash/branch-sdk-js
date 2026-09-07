@@ -76,6 +76,39 @@ export interface SearchOptions extends BrowseOptions {
   maxPrice?: string | number;
 }
 
+/**
+ * What publishing costs for one of the durations the chain sells.
+ *
+ * THE TIERS ARE DATA, NOT CONSTANTS. Each rate is a `metadata` row on the
+ * automobile token class -- `fee_30d`, `fee_180d` -- precisely so the admin
+ * office can reprice by transaction instead of by redeploy. A client that
+ * hardcodes "30 days costs 1 credit" is a client that shows the wrong price
+ * the day after a repricing, and the ledger is the only place that would
+ * disagree with it.
+ *
+ * The set of tiers is discovered the same way, so a third one appears in a
+ * seller's choices without touching this package. Introducing a tier still
+ * takes a `metadata_schemas` declaration on chain, which is deliberate:
+ * repricing is configuration, adding a price point is a product decision.
+ */
+export interface FeeTier {
+  /** Days the listing stays active. `create_listing` takes this. */
+  readonly durationDays: number;
+  /**
+   * The charge, in whole credits, as `listing_fee` computes it.
+   *
+   * SCALE 0, NOT 10, and the difference is the whole reason this is not a
+   * bare read of the column. The stored rate is `NUMERIC(38,10)`, but
+   * `listing_fee` returns `NUMERIC(78,0)` and the ledger it is charged
+   * against has scale 0 -- so the credited amount is the rate rounded, and
+   * that rounded figure is what a seller must be shown and what their balance
+   * must be compared against. Handing back the scale-10 column would produce
+   * `units` a thousand million times larger than a balance's, and the
+   * comparison would silently pass on an empty account.
+   */
+  readonly fee: CreditAmount;
+}
+
 export interface CreateListingInput {
   make: string;
   model: string;
@@ -418,6 +451,46 @@ export class ListingsClient {
     };
   }
 
+  /**
+   * The durations this chain sells, cheapest first.
+   *
+   * A plain SELECT, so a seller can be shown what listing costs before they
+   * have signed anything. `listing_fee` itself is a `PRIVATE VIEW` and cannot
+   * be called from outside the action layer -- but it reads these same rows,
+   * so this reproduces its answer rather than guessing at one.
+   *
+   * Identifiers are parsed here rather than matched with LIKE. `_` is a
+   * single-character wildcard, so the obvious `LIKE 'fee_%d'` also matches
+   * `feeXd` and anything else of that shape; the pattern below says exactly
+   * what a tier identifier is, and a row that does not match is skipped rather
+   * than guessed at.
+   */
+  async fees(): Promise<FeeTier[]> {
+    const { $class_id } = await this.classAndState();
+    const rows = await this.client.query<{ identifier: unknown; value_number: unknown }>(
+      `SELECT identifier, value_number
+         FROM metadata
+        WHERE entity_type = 'token_class'
+          AND entity_id = $class_id
+          AND deleted_at IS NULL`,
+      { $class_id }
+    );
+
+    const tiers: FeeTier[] = [];
+    for (const row of rows) {
+      const identifier = typeof row.identifier === 'string' ? row.identifier : '';
+      const match = /^fee_(\d+)d$/.exec(identifier);
+      if (!match) continue;
+      tiers.push({
+        durationDays: Number(match[1]),
+        fee: roundToWholeCredits(toAmount(row.value_number, LISTING_SCALE, identifier), identifier),
+      });
+    }
+
+    tiers.sort((a, b) => a.durationDays - b.durationDays);
+    return tiers;
+  }
+
   /** Resolve the automobile class and its active state, once per call. */
   private async classAndState(): Promise<{ $class_id: number; $active: number }> {
     if (this.cachedClass) return this.cachedClass;
@@ -521,4 +594,32 @@ function parsePhotos(value: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * A `NUMERIC(38,10)` rate as the `NUMERIC(78,0)` charge it becomes.
+ *
+ * `listing_fee` casts the stored rate to scale 0, and a Postgres numeric cast
+ * to a smaller scale ROUNDS -- half away from zero -- rather than truncating.
+ * So a rate of 1.6 is charged as 2 credits, and a client that floored it would
+ * quote 1, take the seller's agreement to 1, and hand them a 2-credit debit.
+ *
+ * Every rate configured today is a whole number and this changes nothing for
+ * them. It exists for the first fractional one, which will be set by an admin
+ * transaction with no client release attached to it.
+ */
+function roundToWholeCredits(rate: CreditAmount, field: string): CreditAmount {
+  if (rate.decimals === 0) return rate;
+  const scale = 10n ** BigInt(rate.decimals);
+  const negative = rate.units < 0n;
+  const magnitude = negative ? -rate.units : rate.units;
+  const whole = magnitude / scale;
+  const remainder = magnitude % scale;
+  // Half away from zero, matching Postgres rather than JavaScript's Math.round,
+  // which breaks ties towards positive infinity and would disagree below zero.
+  const rounded = remainder * 2n >= scale ? whole + 1n : whole;
+  if (rounded < 0n) {
+    throw new BranchError(`${field} is negative, which is not a price`);
+  }
+  return { units: negative ? -rounded : rounded, decimals: 0 };
 }

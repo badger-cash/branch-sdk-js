@@ -303,3 +303,72 @@ describe('action inputs', () => {
     await expect(client.listings.close(2n ** 60n, 'sold')).rejects.toThrow(/MAX_SAFE_INTEGER/);
   });
 });
+
+/*
+  These cover the parsing and the arithmetic, which are this package's own and
+  are worth pinning. They do NOT cover whether the SELECT is one the node will
+  accept -- a stub answers whatever it is asked, so a green test here would say
+  nothing about the query being valid. That half is verified against a running
+  node, which is the lesson W2 paid for.
+*/
+describe('fees', () => {
+  const rate = (identifier: string, value: string) => ({
+    identifier,
+    value_number: value,
+  });
+
+  it('reads the tiers the chain configures, cheapest first', async () => {
+    const { client } = await connect([
+      rate('fee_180d', '3.0000000000'),
+      rate('fee_30d', '1.0000000000'),
+    ]);
+    const tiers = await client.listings.fees();
+    expect(tiers.map((t) => t.durationDays)).toEqual([30, 180]);
+    expect(tiers[0]?.fee).toEqual({ units: 1n, decimals: 0 });
+    expect(tiers[1]?.fee).toEqual({ units: 3n, decimals: 0 });
+  });
+
+  it('discovers a tier nobody wrote into this package', async () => {
+    const { client } = await connect([rate('fee_7d', '1.0000000000')]);
+    expect((await client.listings.fees())[0]?.durationDays).toBe(7);
+  });
+
+  it('ignores class metadata that is not a rate', async () => {
+    const { client } = await connect([
+      rate('fee_30d', '1.0000000000'),
+      // A wildcard LIKE would have taken this one: `_` matches any character.
+      rate('feeXd', '99.0000000000'),
+      rate('description', '0.0000000000'),
+    ]);
+    const tiers = await client.listings.fees();
+    expect(tiers).toHaveLength(1);
+    expect(tiers[0]?.durationDays).toBe(30);
+  });
+
+  it('rounds a fractional rate the way the chain charges it', async () => {
+    // listing_fee casts to NUMERIC(78,0), and a Postgres numeric cast rounds
+    // rather than truncating. Flooring here would quote 1 and debit 2.
+    const { client } = await connect([
+      rate('fee_1d', '1.6000000000'),
+      rate('fee_2d', '1.5000000000'),
+      rate('fee_3d', '1.4999999999'),
+    ]);
+    const tiers = await client.listings.fees();
+    expect(tiers.map((t) => t.fee.units)).toEqual([2n, 2n, 1n]);
+  });
+
+  it('gives a fee on the ledger scale, not the column scale', async () => {
+    // The trap this exists to close: the rate column is NUMERIC(38,10) and a
+    // balance is NUMERIC(78,0). Comparing raw units across the two would find
+    // 1 credit affordable against a balance of 0.
+    const { client } = await connect([rate('fee_30d', '1.0000000000')]);
+    const [tier] = await client.listings.fees();
+    expect(tier?.fee.decimals).toBe(0);
+    expect(tier?.fee.units).toBe(1n);
+  });
+
+  it('returns nothing when no duration is priced', async () => {
+    const { client } = await connect([]);
+    expect(await client.listings.fees()).toEqual([]);
+  });
+});
