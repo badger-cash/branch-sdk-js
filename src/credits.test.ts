@@ -174,3 +174,71 @@ describe('history', () => {
     await expect(client.credits.history()).rejects.toThrow(/no person is registered/);
   });
 });
+
+/*
+  The settlement fields, which exist because `memo` looks like it carries the
+  payment reference and does not. These pin the mapping; whether the LEFT JOIN
+  is one the node accepts is verified against a running node, because a stub
+  answers whatever it is asked.
+*/
+describe('statement references', () => {
+  const entry = (over: Record<string, unknown>) => ({
+    id: 1,
+    kind: 'mint',
+    amount: '100',
+    memo: 'credit purchase',
+    created_at: 1757000000,
+    from_holder_id: null,
+    to_holder_id: 7,
+    settlement_reference: null,
+    settlement_note: null,
+    ...over,
+  });
+
+  it('carries the payment reference off the settlement, not the memo', async () => {
+    const { client } = await connect({
+      balance: { amount: '100', decimals: 0 },
+      whoami: ME,
+      entries: [entry({ settlement_reference: 'CAPTURE-7X9', settlement_note: 'credit issuance' })],
+    });
+    const [row] = await client.credits.history();
+    // The trap: memo is the literal, and reading it for a capture id succeeds
+    // silently with the wrong string.
+    expect(row?.memo).toBe('credit purchase');
+    expect(row?.reference).toBe('CAPTURE-7X9');
+    expect(row?.settlementNote).toBe('credit issuance');
+  });
+
+  it('leaves the reference null when no money moved off-chain', async () => {
+    const { client } = await connect({
+      balance: { amount: '100', decimals: 0 },
+      whoami: ME,
+      entries: [
+        entry({
+          kind: 'transfer',
+          memo: 'listing fee',
+          to_holder_id: 9,
+          from_holder_id: 7,
+          settlement_note: 'listing publication',
+        }),
+      ],
+    });
+    const [row] = await client.credits.history();
+    expect(row?.reference).toBeNull();
+    expect(row?.settlementNote).toBe('listing publication');
+    expect(row?.direction).toBe('debit');
+  });
+
+  it('joins settlements so an entry without one still comes back', async () => {
+    // LEFT JOIN, not JOIN: settlement_id is nullable, and an inner join would
+    // silently drop those entries from a statement that is meant to be total.
+    const { client, queries } = await connect({
+      balance: { amount: '100', decimals: 0 },
+      whoami: ME,
+      entries: [entry({})],
+    });
+    const [row] = await client.credits.history();
+    expect(row?.reference).toBeNull();
+    expect(queries.some((q) => /LEFT JOIN settlements/.test(q.sql))).toBe(true);
+  });
+});
