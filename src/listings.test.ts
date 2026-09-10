@@ -157,8 +157,11 @@ describe('search', () => {
     const search = queries.find((q) => q.sql.includes('ORDER BY'));
     // Folded here rather than lower()ed in SQL: kwil has no expression
     // indexes, so lower(value_text) would scan every metadata row.
-    expect(search?.params.$make).toBe('toyota');
-    expect(search?.params.$model).toBe('corolla');
+    //
+    // Bound as $f0/$f1 rather than $make/$model since the facets collapsed
+    // into one join — the values are what matter, not which slot they took.
+    expect(Object.values(search?.params ?? {})).toContain('toyota');
+    expect(Object.values(search?.params ?? {})).toContain('corolla');
     expect(search?.sql).not.toContain('lower(');
   });
 
@@ -185,16 +188,19 @@ describe('search', () => {
     }
   });
 
-  it('adds one join per facet and none for absent ones', async () => {
+  it('adds one facet join however many facets, and none for absent ones', async () => {
+    // Rewritten from "one join per facet", which is the contract this
+    // deliberately replaced: eight facets would have taken a filtered browse
+    // past twenty joins.
     const { client, queries } = await connect();
     await client.listings.search({ make: 'toyota' });
     const withOne = queries.find((q) => q.sql.includes('ORDER BY'));
-    expect((withOne?.sql.match(/JOIN metadata mk /g) ?? []).length).toBe(1);
+    expect((withOne?.sql.match(/HAVING count\(DISTINCT identifier\)/g) ?? []).length).toBe(1);
 
     const { client: plain, queries: plainQueries } = await connect();
     await plain.listings.browse();
     const none = plainQueries.find((q) => q.sql.includes('ORDER BY'));
-    expect(none?.sql).not.toContain('JOIN metadata mk ');
+    expect(none?.sql).not.toContain('HAVING');
   });
 
   it('hides listings whose paid term has run out', async () => {
@@ -519,5 +525,98 @@ describe('photos on the browse summary', () => {
     const { client } = await connect([summary({ photos: '{"not":"an array"}' })]);
     const [row] = await client.listings.search();
     expect(row?.photos).toEqual([]);
+  });
+});
+
+describe('facet filters', () => {
+  it('collapses every text facet into a single join', async () => {
+    const { client, queries } = await connect();
+    await client.listings.search({
+      make: 'Toyota',
+      bodyStyle: 'SUV',
+      transmission: 'Automatic',
+      fuelType: 'Diesel',
+      exteriorColor: 'White',
+      condition: 'Used',
+      titleStatus: 'Clean',
+    });
+
+    const sql = queries[queries.length - 1]?.sql ?? '';
+    // Seven facets. One join, not seven -- which is the whole point: the old
+    // shape drew its own line at "three or four".
+    //
+    // INNER joins only. The projection carries a dozen LEFT JOIN metadata to
+    // build the card, and counting those was this assertion's first mistake:
+    // it reported ten filter joins where there are none.
+    const filterJoins = (sql.match(/(?<!LEFT )JOIN metadata/g) ?? []).length;
+    expect(filterJoins).toBe(0);
+    expect((sql.match(/HAVING count\(DISTINCT identifier\)/g) ?? []).length).toBe(1);
+  });
+
+  it('folds every facet value, because the chain folds on write', async () => {
+    const { client, queries } = await connect();
+    await client.listings.search({ make: 'Toyota', bodyStyle: 'SUV' });
+
+    const params = queries[queries.length - 1]?.params ?? {};
+    expect(Object.values(params)).toContain('toyota');
+    expect(Object.values(params)).toContain('suv');
+    // Two pairs requested, so a listing must match both.
+    expect(params.$facets).toBe(2);
+  });
+
+  it('requires every facet, not any of them', async () => {
+    // The OR chain gathers candidate rows; the HAVING is what makes it AND.
+    // Without the count, asking for a Toyota SUV would return every Toyota and
+    // every SUV.
+    const { client, queries } = await connect();
+    await client.listings.search({ make: 'Toyota', bodyStyle: 'SUV', condition: 'Used' });
+    expect(queries[queries.length - 1]?.params.$facets).toBe(3);
+  });
+
+  it('ignores a facet that is blank rather than matching on empty', async () => {
+    const { client, queries } = await connect();
+    await client.listings.search({ make: 'Toyota', bodyStyle: '   ' });
+    expect(queries[queries.length - 1]?.params.$facets).toBe(1);
+  });
+
+  it('adds no facet join at all when none is asked for', async () => {
+    const { client, queries } = await connect();
+    await client.listings.search({ limit: 10 });
+    const sql = queries[queries.length - 1]?.sql ?? '';
+    expect(sql).not.toContain('HAVING');
+    expect(sql).not.toContain('$facets');
+  });
+
+  it('filters the flags only on true', async () => {
+    /*
+      Matched on the FILTER predicate, not the identifier. `accepts_offers`
+      appears in every browse query regardless, because the projection selects
+      it for the card — asserting on the bare name was this test's first
+      mistake, and it passed for the wrong reason.
+    */
+    const asked = await connect();
+    await asked.client.listings.search({ acceptsOffers: true });
+    expect(asked.queries[asked.queries.length - 1]?.sql).toContain('fao.value_boolean = true');
+
+    // false must not narrow: it would exclude every listing published before
+    // the field existed, which is null rather than false.
+    const not = await connect();
+    await not.client.listings.search({ acceptsOffers: false });
+    expect(not.queries[not.queries.length - 1]?.sql).not.toContain('fao.value_boolean = true');
+  });
+
+  it('keeps the keyset cursor alongside a facet', async () => {
+    // The thing a GROUP BY rewrite is most likely to break. Paging has to stay
+    // correct under a filter or "Load more" repeats or skips listings.
+    const { client, queries } = await connect();
+    await client.listings.search({
+      make: 'Toyota',
+      after: { listedAt: new Date(1757000000 * 1000), listingId: 42n },
+    });
+
+    const sql = queries[queries.length - 1]?.sql ?? '';
+    expect(sql).toContain('HAVING count(DISTINCT identifier)');
+    expect(sql).toContain('t.created_at < $after_at');
+    expect(sql).toContain('ORDER BY t.created_at DESC, t.id DESC');
   });
 });
