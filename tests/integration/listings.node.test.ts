@@ -343,4 +343,22 @@ describe('optional descriptors', () => {
     expect(found?.acceptsOffers).toBe(true);
     expect(found?.acceptsTrade).toBe(false);
   }, 120_000);
+
+  it('carries photo URLs on the browse summary, where a card needs them', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Photo Seller');
+    const url = 'https://objects.test/browse-' + Date.now().toString(36) + '.jpg';
+
+    await client.listings.create({ ...listingInput(), photos: [url] });
+
+    const [own] = await client.listings.mine({ limit: 1 });
+    const found = (await client.listings.search({ limit: 50 })).find(
+      (l) => l.listingId === own!.listingId
+    );
+
+    expect(found, 'the listing did not come back from search').toBeTruthy();
+    // The whole point: no second query per card. A grid of twelve listings is
+    // one round trip, not thirteen.
+    expect(found?.photos).toEqual([url]);
+  }, 120_000);
 });
