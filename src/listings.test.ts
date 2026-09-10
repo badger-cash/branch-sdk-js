@@ -372,3 +372,106 @@ describe('fees', () => {
     expect(await client.listings.fees()).toEqual([]);
   });
 });
+
+/*
+  The optional descriptors. These pin the mapping and the null handling; whether
+  twenty LEFT JOINs is a query the node accepts is verified against a running
+  node, because a stub answers whatever it is asked.
+*/
+describe('optional descriptors', () => {
+  it('sends null for anything the seller left alone', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create(INPUT);
+
+    const sent = writes[0]?.inputs ?? {};
+    // NOT an empty string. The action treats '' and NULL alike, but sending
+    // null is what says "unanswered" at the boundary rather than relying on
+    // that equivalence holding.
+    expect(sent.$body_style).toBeNull();
+    expect(sent.$title_status).toBeNull();
+    expect(sent.$accepts_offers).toBeNull();
+    expect(sent.$accepts_trade).toBeNull();
+  });
+
+  it('sends false as false, not as absent', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create({ ...INPUT, acceptsOffers: true, acceptsTrade: false });
+
+    const sent = writes[0]?.inputs ?? {};
+    expect(sent.$accepts_offers).toBe(true);
+    // The whole point: a seller who declined has answered, and `?? null` must
+    // not collapse that into "never asked".
+    expect(sent.$accepts_trade).toBe(false);
+  });
+
+  it('passes the descriptors through unfolded, because the chain folds them', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create({ ...INPUT, bodyStyle: 'Pickup', fuelType: 'Diesel' });
+
+    const sent = writes[0]?.inputs ?? {};
+    expect(sent.$body_style).toBe('Pickup');
+    expect(sent.$fuel_type).toBe('Diesel');
+  });
+
+  it('reads a summary flag back, and distinguishes false from never asked', async () => {
+    const summary = (over: Record<string, unknown>) => ({
+      id: 1,
+      name: '2021 Toyota Hilux',
+      created_at: 1757000000,
+      make: 'toyota',
+      model: 'hilux',
+      year: '2021',
+      price: '18000',
+      currency: 'credits',
+      location: 'Garapan',
+      accepts_offers: null,
+      accepts_trade: null,
+      ...over,
+    });
+
+    const asked = await connect([summary({ accepts_offers: true, accepts_trade: false })]);
+    const [row] = await asked.client.listings.search();
+    expect(row?.acceptsOffers).toBe(true);
+    expect(row?.acceptsTrade).toBe(false);
+
+    const never = await connect([summary({})]);
+    const [quiet] = await never.client.listings.search();
+    expect(quiet?.acceptsOffers).toBeNull();
+    expect(quiet?.acceptsTrade).toBeNull();
+  });
+
+  it('treats an empty descriptor as absent rather than as an answer', async () => {
+    // The action never writes one -- it skips an empty field -- so an empty
+    // string here came from something that bypassed the action, and '' is not
+    // a body style a seller chose.
+    const { client } = await connect([], {
+      listing_id: 1,
+      title: '2021 Toyota Hilux',
+      state: 'active',
+      seller: 'Ada',
+      make: 'toyota',
+      model: 'hilux',
+      year: '2021',
+      price: '18000',
+      currency: 'credits',
+      location: 'Garapan',
+      mileage: '42000',
+      vin: 'x',
+      description: 'd',
+      photos: '[]',
+      contact_via: 'CNMI Central',
+      listed_at: 1757000000,
+      body_style: '',
+      transmission: null,
+      fuel_type: null,
+      exterior_color: null,
+      condition: null,
+      title_status: null,
+      accepts_offers: null,
+      accepts_trade: null,
+    });
+    const listing = await client.listings.get(1n);
+    expect(listing?.bodyStyle).toBeNull();
+    expect(listing?.titleStatus).toBeNull();
+  });
+});

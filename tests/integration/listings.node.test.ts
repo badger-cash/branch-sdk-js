@@ -262,3 +262,85 @@ describe('listings client', () => {
     );
   }, 150_000);
 });
+
+/**
+ * The eight optional descriptors, against a live node.
+ *
+ * Six of them were declared for months with no way to write them, so the
+ * failure this guards is not a wrong value but a missing row -- which the write
+ * side cannot see, because create_listing succeeded either way.
+ *
+ * And the detail query now carries twenty LEFT JOINs. Whether kwil's planner
+ * accepts that is not something a stub can be asked.
+ */
+describe('optional descriptors', () => {
+  it('writes all eight, and reads them back off a twenty-join detail query', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Descriptor Seller');
+
+    await client.listings.create({
+      ...listingInput(),
+      // Title-cased on the way in, so a missing fold shows up here rather than
+      // as a facet filter that quietly finds nothing.
+      bodyStyle: 'Pickup',
+      transmission: 'Automatic',
+      fuelType: 'Diesel',
+      exteriorColor: 'White',
+      condition: 'Used',
+      titleStatus: 'Clean',
+      acceptsOffers: true,
+      acceptsTrade: false,
+    });
+
+    const [own] = await client.listings.mine({ limit: 1 });
+    const listing = await client.listings.get(own!.listingId);
+
+    expect(listing?.bodyStyle).toBe('pickup');
+    expect(listing?.transmission).toBe('automatic');
+    expect(listing?.fuelType).toBe('diesel');
+    expect(listing?.exteriorColor).toBe('white');
+    expect(listing?.condition).toBe('used');
+    expect(listing?.titleStatus).toBe('clean');
+
+    expect(listing?.acceptsOffers).toBe(true);
+    // FALSE IS NOT NULL. The seller declined, and that answer has to survive
+    // the round trip as an answer.
+    expect(listing?.acceptsTrade).toBe(false);
+  }, 120_000);
+
+  it('leaves every descriptor null when the seller was never asked', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Quiet Seller');
+    await client.listings.create(listingInput());
+
+    const [own] = await client.listings.mine({ limit: 1 });
+    const listing = await client.listings.get(own!.listingId);
+
+    expect(listing?.bodyStyle).toBeNull();
+    expect(listing?.titleStatus).toBeNull();
+    // Null, not false: nobody asked, so nobody declined. Every listing
+    // published before these fields existed reads exactly like this.
+    expect(listing?.acceptsOffers).toBeNull();
+    expect(listing?.acceptsTrade).toBeNull();
+  }, 120_000);
+
+  it('carries the two flags on the browse summary, where a card can see them', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Offer Seller');
+    const vin = uniqueVin();
+    await client.listings.create({
+      ...listingInput({ vin, make: 'Mazda', model: `Obo${Date.now().toString(36)}` }),
+      acceptsOffers: true,
+      acceptsTrade: false,
+    });
+
+    const [own] = await client.listings.mine({ limit: 1 });
+    const found = (await client.listings.search({ limit: 50 })).find(
+      (l) => l.listingId === own!.listingId
+    );
+
+    expect(found, 'the listing did not come back from search').toBeTruthy();
+    expect(found?.acceptsOffers).toBe(true);
+    expect(found?.acceptsTrade).toBe(false);
+  }, 120_000);
+});
