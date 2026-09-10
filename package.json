@@ -1,6 +1,6 @@
 {
   "name": "@badger-cash/branch-sdk-js",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Typed JavaScript/TypeScript client for Branch nodes",
   "license": "MIT",
   "repository": {
