@@ -22,6 +22,26 @@ export interface ListingSummary {
   currency: string;
   location: string;
   listedAt: Date;
+
+  /**
+   * Open to offers, and open to a trade. On the SUMMARY, deliberately.
+   *
+   * These two earn a place in the browse projection where the six descriptors
+   * do not, because they change how a price reads. "$18,000" and "$18,000 or
+   * best offer" are different offers, and a buyer scanning a grid decides which
+   * cards to open on exactly that. Body style and fuel type are things you look
+   * up once you have opened one.
+   *
+   * Two more LEFT JOINs on a query that already carries seven. Worth it here,
+   * and worth NOT repeating for every future optional field.
+   *
+   * THREE STATES, NOT TWO. `false` is a seller who was asked and declined;
+   * `null` is a seller who was never shown the question. Rendering null as
+   * "no" attributes a refusal to somebody who did not make one -- and every
+   * listing published before this field existed is null, permanently.
+   */
+  acceptsOffers: boolean | null;
+  acceptsTrade: boolean | null;
 }
 
 /** Everything on one advertisement. */
@@ -35,6 +55,26 @@ export interface Listing extends ListingSummary {
   photos: string[];
   /** The custodian holding the seller's contact details, never the details. */
   contactVia: string;
+
+  /*
+    The optional descriptors, as the chain stores them: FOLDED. `displayCase`
+    in the app is what puts a capital letter back — doing it here would make
+    the value read back differ from the value a filter must be given, which is
+    the kind of asymmetry that produces a search box finding nothing.
+
+    Null means the seller said nothing, and every consumer has to handle it:
+    six of these were declared for months before anything could write them, so
+    every listing published before then has null for all of them, permanently.
+  */
+  bodyStyle: string | null;
+  transmission: string | null;
+  fuelType: string | null;
+  exteriorColor: string | null;
+  condition: string | null;
+  titleStatus: string | null;
+
+  // acceptsOffers and acceptsTrade are inherited: they are on the summary
+  // because a card needs them, and a detail view is a summary with more.
 }
 
 /** One of the seller's own listings, in any state. */
@@ -128,6 +168,35 @@ export interface CreateListingInput {
   mileage: string | number;
   description: string;
   photos?: string[];
+
+  /*
+    THE OPTIONAL DESCRIPTORS. Omitting one writes no row, which is not the same
+    as writing an empty one: a filter can exclude a listing that says nothing,
+    and cannot recover a listing that said "" as though it were an answer.
+
+    All six fold to lower on the chain, so the value read back is not the value
+    written. `displayCase` in the app is what puts a capital letter back.
+  */
+  bodyStyle?: string;
+  transmission?: string;
+  fuelType?: string;
+  exteriorColor?: string;
+  condition?: string;
+  /** Clean, salvage, rebuilt. The disclosure a used-car buyer wants most. */
+  titleStatus?: string;
+
+  /**
+   * Open to offers, and open to a trade.
+   *
+   * `undefined` means the seller was never asked and writes no row. `false`
+   * means they were asked and declined, and writes one. Collapsing the two
+   * would tell a buyer somebody refused them when nobody was asked.
+   *
+   * Neither is a price. A car listed at 18000 OBO is still 18000 for filtering
+   * and ordering, with a flag beside it.
+   */
+  acceptsOffers?: boolean;
+  acceptsTrade?: boolean;
 }
 
 interface SummaryRow {
@@ -140,6 +209,8 @@ interface SummaryRow {
   price: unknown;
   currency: unknown;
   location: unknown;
+  accepts_offers: unknown;
+  accepts_trade: unknown;
 }
 
 interface DetailRow {
@@ -159,6 +230,14 @@ interface DetailRow {
   photos: unknown;
   contact_via: unknown;
   listed_at: unknown;
+  body_style: unknown;
+  transmission: unknown;
+  fuel_type: unknown;
+  exterior_color: unknown;
+  condition: unknown;
+  title_status: unknown;
+  accepts_offers: unknown;
+  accepts_trade: unknown;
 }
 
 interface OwnRow {
@@ -201,6 +280,23 @@ export class ListingsClient {
         $mileage: decimalString(input.mileage, 'mileage'),
         $description: input.description,
         $photos_json: JSON.stringify(input.photos ?? []),
+        /*
+          NULL, NOT EMPTY STRING, for anything the seller left alone. The action
+          treats '' and NULL alike and writes neither, but sending null is what
+          says so at the boundary rather than relying on that -- and `?? null`
+          rather than a truthiness check, so a deliberate empty string is not
+          silently turned into something else on the way past.
+        */
+        $body_style: input.bodyStyle ?? null,
+        $transmission: input.transmission ?? null,
+        $fuel_type: input.fuelType ?? null,
+        $exterior_color: input.exteriorColor ?? null,
+        $condition: input.condition ?? null,
+        $title_status: input.titleStatus ?? null,
+        // `?? null` and not `?? false`: an unanswered question writes no row,
+        // and an explicit false writes one saying so.
+        $accepts_offers: input.acceptsOffers ?? null,
+        $accepts_trade: input.acceptsTrade ?? null,
       },
       // Nothing infers to NUMERIC: a string infers text and a number int8, and
       // the action refuses both. Both numeric parameters have to be declared.
@@ -240,7 +336,12 @@ export class ListingsClient {
               cu.value_text AS currency, lo.value_text AS location,
               mi.value_number AS mileage, vi.value_text AS vin,
               de.value_text AS description, ph.value_json AS photos,
-              cg.name AS contact_via, t.created_at AS listed_at
+              cg.name AS contact_via, t.created_at AS listed_at,
+              bs.value_text AS body_style, tr.value_text AS transmission,
+              ft.value_text AS fuel_type, ec.value_text AS exterior_color,
+              cd.value_text AS condition, ts.value_text AS title_status,
+              ao.value_boolean AS accepts_offers,
+              at.value_boolean AS accepts_trade
          FROM tokens t
          JOIN token_class_states st ON st.id = t.current_state_id
          JOIN people p              ON p.id = t.issuer_person_id
@@ -267,6 +368,22 @@ export class ListingsClient {
          LEFT JOIN metadata ct ON ct.entity_type = 'token' AND ct.entity_id = t.id
                               AND ct.identifier = 'contact' AND ct.deleted_at IS NULL
          LEFT JOIN groups cg   ON cg.id = ct.custodian_group_id
+         LEFT JOIN metadata bs ON bs.entity_type = 'token' AND bs.entity_id = t.id
+                              AND bs.identifier = 'body_style' AND bs.deleted_at IS NULL
+         LEFT JOIN metadata tr ON tr.entity_type = 'token' AND tr.entity_id = t.id
+                              AND tr.identifier = 'transmission' AND tr.deleted_at IS NULL
+         LEFT JOIN metadata ft ON ft.entity_type = 'token' AND ft.entity_id = t.id
+                              AND ft.identifier = 'fuel_type' AND ft.deleted_at IS NULL
+         LEFT JOIN metadata ec ON ec.entity_type = 'token' AND ec.entity_id = t.id
+                              AND ec.identifier = 'exterior_color' AND ec.deleted_at IS NULL
+         LEFT JOIN metadata cd ON cd.entity_type = 'token' AND cd.entity_id = t.id
+                              AND cd.identifier = 'condition' AND cd.deleted_at IS NULL
+         LEFT JOIN metadata ts ON ts.entity_type = 'token' AND ts.entity_id = t.id
+                              AND ts.identifier = 'title_status' AND ts.deleted_at IS NULL
+         LEFT JOIN metadata ao ON ao.entity_type = 'token' AND ao.entity_id = t.id
+                              AND ao.identifier = 'accepts_offers' AND ao.deleted_at IS NULL
+         LEFT JOIN metadata at ON at.entity_type = 'token' AND at.entity_id = t.id
+                              AND at.identifier = 'accepts_trade' AND at.deleted_at IS NULL
         WHERE t.id = $token_id AND t.deleted_at IS NULL`,
       { $token_id: asQueryInt(BigInt(listingId)) }
     );
@@ -290,6 +407,14 @@ export class ListingsClient {
       photos: parsePhotos(row.photos),
       contactVia: asText(row.contact_via, 'contact_via'),
       listedAt: toDate(row.listed_at),
+      bodyStyle: asOptionalText(row.body_style),
+      transmission: asOptionalText(row.transmission),
+      fuelType: asOptionalText(row.fuel_type),
+      exteriorColor: asOptionalText(row.exterior_color),
+      condition: asOptionalText(row.condition),
+      titleStatus: asOptionalText(row.title_status),
+      acceptsOffers: asOptionalBoolean(row.accepts_offers),
+      acceptsTrade: asOptionalBoolean(row.accepts_trade),
     };
   }
 
@@ -372,7 +497,9 @@ export class ListingsClient {
               myv.value_number AS year,
               mpv.value_number AS price,
               mcv.value_text  AS currency,
-              mlv.value_text  AS location
+              mlv.value_text  AS location,
+              mao.value_boolean AS accepts_offers,
+              mat.value_boolean AS accepts_trade
          FROM tokens t
          ${joins.join('\n         ')}
          LEFT JOIN metadata mkv ON mkv.entity_type = 'token' AND mkv.entity_id = t.id
@@ -387,6 +514,10 @@ export class ListingsClient {
                                AND mcv.identifier = 'price_currency' AND mcv.deleted_at IS NULL
          LEFT JOIN metadata mlv ON mlv.entity_type = 'token' AND mlv.entity_id = t.id
                                AND mlv.identifier = 'location' AND mlv.deleted_at IS NULL
+         LEFT JOIN metadata mao ON mao.entity_type = 'token' AND mao.entity_id = t.id
+                               AND mao.identifier = 'accepts_offers' AND mao.deleted_at IS NULL
+         LEFT JOIN metadata mat ON mat.entity_type = 'token' AND mat.entity_id = t.id
+                               AND mat.identifier = 'accepts_trade' AND mat.deleted_at IS NULL
          LEFT JOIN metadata mev ON mev.entity_type = 'token' AND mev.entity_id = t.id
                                AND mev.identifier = 'expires_at' AND mev.deleted_at IS NULL
         WHERE t.token_class_id = $class_id
@@ -448,6 +579,8 @@ export class ListingsClient {
       currency: asText(row.currency, 'currency'),
       location: asText(row.location, 'location'),
       listedAt: toDate(row.created_at),
+      acceptsOffers: asOptionalBoolean(row.accepts_offers),
+      acceptsTrade: asOptionalBoolean(row.accepts_trade),
     };
   }
 
@@ -578,6 +711,34 @@ function asText(value: unknown, field: string): string {
     throw new BranchError(`expected text for ${field}, received ${typeof value}`);
   }
   return value;
+}
+
+/**
+ * A LEFT JOIN that found nothing, kept as null rather than raised.
+ *
+ * Unlike `asText`, an absent value here is ordinary: these fields are optional
+ * and six of them were declared for months before any action could write them,
+ * so every listing published before that has null for all of them, for good.
+ * Throwing would make the common case an error.
+ *
+ * An empty string is folded to null too. The chain never writes one -- the
+ * action skips a field that is empty -- so if one arrives it came from
+ * somewhere that bypassed the action, and "" is not an answer a seller gave.
+ */
+function asOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string' || value === '') return null;
+  return value;
+}
+
+/**
+ * Three states, and the third is the point.
+ *
+ * `true` and `false` are both answers a seller gave. Anything else -- a null
+ * from a LEFT JOIN that matched nothing -- means they were never asked, and
+ * must not read as "no".
+ */
+function asOptionalBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
 }
 
 function toDate(value: unknown): Date {
