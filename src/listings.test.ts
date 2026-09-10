@@ -475,3 +475,49 @@ describe('optional descriptors', () => {
     expect(listing?.titleStatus).toBeNull();
   });
 });
+
+describe('photos on the browse summary', () => {
+  const summary = (over: Record<string, unknown>) => ({
+    id: 1,
+    name: '2021 Toyota Hilux',
+    created_at: 1757000000,
+    make: 'toyota',
+    model: 'hilux',
+    year: '2021',
+    price: '18000',
+    currency: 'credits',
+    location: 'Garapan',
+    accepts_offers: null,
+    accepts_trade: null,
+    photos: null,
+    ...over,
+  });
+
+  it('carries the photo URLs a card needs', async () => {
+    // Left off the summary at first, on the reasoning that browse should stay
+    // cheap. The result was a grid of placeholder icons -- the one thing a car
+    // marketplace cannot ship, because the picture IS the listing on a card.
+    const { client } = await connect([
+      summary({ photos: '["https://objects.test/a.jpg","https://objects.test/b.jpg"]' }),
+    ]);
+    const [row] = await client.listings.search();
+    expect(row?.photos).toEqual(['https://objects.test/a.jpg', 'https://objects.test/b.jpg']);
+  });
+
+  it('gives an empty array to a listing with none, not null', async () => {
+    // Common and permanent: photos are optional, and every listing published
+    // before the upload pipeline existed has none. A card still needs to render.
+    const { client } = await connect([summary({})]);
+    const [row] = await client.listings.search();
+    expect(row?.photos).toEqual([]);
+  });
+
+  it('survives a photos row that is not an array', async () => {
+    // value_json is TEXT and nothing on the chain validates its shape, so a
+    // client that trusted it would throw on the browse page rather than on the
+    // one listing that was malformed.
+    const { client } = await connect([summary({ photos: '{"not":"an array"}' })]);
+    const [row] = await client.listings.search();
+    expect(row?.photos).toEqual([]);
+  });
+});

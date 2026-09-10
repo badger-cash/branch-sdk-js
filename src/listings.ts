@@ -42,6 +42,24 @@ export interface ListingSummary {
    */
   acceptsOffers: boolean | null;
   acceptsTrade: boolean | null;
+
+  /**
+   * The listing's photographs, as URLs.
+   *
+   * ON THE SUMMARY, because a classifieds grid without photographs is not a
+   * classifieds grid. This was omitted at first on the reasoning that browse
+   * should stay cheap and photos were a detail-page concern -- and the result
+   * was a wall of placeholder icons, which is the one thing a car marketplace
+   * cannot ship. The picture IS the listing on a card; the words are the
+   * caption.
+   *
+   * One more LEFT JOIN, and it buys more than the other nine put together.
+   *
+   * Empty for a listing published without any, which stays common: photos are
+   * optional and every listing made before the upload pipeline existed has
+   * none. A caller still needs a placeholder.
+   */
+  photos: string[];
 }
 
 /** Everything on one advertisement. */
@@ -51,8 +69,6 @@ export interface Listing extends ListingSummary {
   mileage: bigint;
   vin: string;
   description: string;
-  /** URLs, as `create_listing` received them. */
-  photos: string[];
   /** The custodian holding the seller's contact details, never the details. */
   contactVia: string;
 
@@ -211,6 +227,7 @@ interface SummaryRow {
   location: unknown;
   accepts_offers: unknown;
   accepts_trade: unknown;
+  photos: unknown;
 }
 
 interface DetailRow {
@@ -499,7 +516,8 @@ export class ListingsClient {
               mcv.value_text  AS currency,
               mlv.value_text  AS location,
               mao.value_boolean AS accepts_offers,
-              mat.value_boolean AS accepts_trade
+              mat.value_boolean AS accepts_trade,
+              mph.value_json AS photos
          FROM tokens t
          ${joins.join('\n         ')}
          LEFT JOIN metadata mkv ON mkv.entity_type = 'token' AND mkv.entity_id = t.id
@@ -518,6 +536,8 @@ export class ListingsClient {
                                AND mao.identifier = 'accepts_offers' AND mao.deleted_at IS NULL
          LEFT JOIN metadata mat ON mat.entity_type = 'token' AND mat.entity_id = t.id
                                AND mat.identifier = 'accepts_trade' AND mat.deleted_at IS NULL
+         LEFT JOIN metadata mph ON mph.entity_type = 'token' AND mph.entity_id = t.id
+                               AND mph.identifier = 'photos' AND mph.deleted_at IS NULL
          LEFT JOIN metadata mev ON mev.entity_type = 'token' AND mev.entity_id = t.id
                                AND mev.identifier = 'expires_at' AND mev.deleted_at IS NULL
         WHERE t.token_class_id = $class_id
@@ -581,6 +601,7 @@ export class ListingsClient {
       listedAt: toDate(row.created_at),
       acceptsOffers: asOptionalBoolean(row.accepts_offers),
       acceptsTrade: asOptionalBoolean(row.accepts_trade),
+      photos: parsePhotos(row.photos),
     };
   }
 
