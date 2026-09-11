@@ -362,3 +362,125 @@ describe('optional descriptors', () => {
     expect(found?.photos).toEqual([url]);
   }, 120_000);
 });
+
+/**
+ * Facet filters, against a node.
+ *
+ * The unit tests read the SQL string. Whether kwil's planner accepts a derived
+ * table with GROUP BY and HAVING alongside a dozen LEFT JOINs and a keyset
+ * cursor is a question only a node answers.
+ */
+describe('facet filters', () => {
+  it('narrows on several facets at once, and requires all of them', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Facet Seller');
+    const stamp = Date.now().toString(36);
+
+    // Two listings differing in exactly one facet, so a filter that ORed
+    // instead of ANDing would return both.
+    await client.listings.create({
+      ...listingInput({ model: `Fac${stamp}` }),
+      bodyStyle: 'SUV',
+      fuelType: 'Diesel',
+    });
+    await client.listings.create({
+      ...listingInput({ model: `Fac${stamp}` }),
+      bodyStyle: 'Sedan',
+      fuelType: 'Diesel',
+    });
+
+    const both = await client.listings.search({ model: `Fac${stamp}`, limit: 50 });
+    expect(both).toHaveLength(2);
+
+    const suvs = await client.listings.search({
+      model: `Fac${stamp}`,
+      bodyStyle: 'SUV',
+      fuelType: 'Diesel',
+      limit: 50,
+    });
+    expect(suvs, 'two facets must AND, not OR').toHaveLength(1);
+    expect(suvs[0]?.listingId).toBeTruthy();
+  }, 180_000);
+
+  it('excludes a listing that said nothing about the facet', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Silent Seller');
+    const stamp = Date.now().toString(36);
+
+    await client.listings.create({ ...listingInput({ model: `Sil${stamp}` }) });
+
+    // Writing no row for an unanswered field is what makes this correct: the
+    // listing is absent from the filter rather than matching on ''.
+    const found = await client.listings.search({
+      model: `Sil${stamp}`,
+      bodyStyle: 'SUV',
+      limit: 50,
+    });
+    expect(found).toHaveLength(0);
+  }, 120_000);
+
+  it('pages correctly under a filter', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Paging Seller');
+    const stamp = Date.now().toString(36);
+
+    for (let i = 0; i < 3; i++) {
+      await client.listings.create({
+        ...listingInput({ model: `Pag${stamp}` }),
+        bodyStyle: 'SUV',
+      });
+    }
+
+    const first = await client.listings.search({
+      model: `Pag${stamp}`,
+      bodyStyle: 'SUV',
+      limit: 2,
+    });
+    expect(first).toHaveLength(2);
+
+    const second = await client.listings.search({
+      model: `Pag${stamp}`,
+      bodyStyle: 'SUV',
+      limit: 2,
+      after: { listedAt: first[1]!.listedAt, listingId: first[1]!.listingId },
+    });
+
+    // The thing a GROUP BY rewrite is most likely to break. Three listings
+    // minted in adjacent blocks share timestamps, so the cursor's id
+    // tiebreaker is doing real work here.
+    expect(second).toHaveLength(1);
+    const ids = [...first, ...second].map((l) => l.listingId.toString());
+    expect(new Set(ids).size, 'a listing appeared on two pages').toBe(3);
+  }, 240_000);
+
+  it('filters on open to offers, and only on true', async () => {
+    if (!requireNode()) return;
+    const client = await seller('Offers Seller');
+    const stamp = Date.now().toString(36);
+
+    await client.listings.create({
+      ...listingInput({ model: `Obo${stamp}` }),
+      acceptsOffers: true,
+    });
+    await client.listings.create({
+      ...listingInput({ model: `Obo${stamp}` }),
+      acceptsOffers: false,
+    });
+
+    const open = await client.listings.search({
+      model: `Obo${stamp}`,
+      acceptsOffers: true,
+      limit: 50,
+    });
+    expect(open).toHaveLength(1);
+    expect(open[0]?.acceptsOffers).toBe(true);
+
+    // false does not narrow at all, so both come back.
+    const all = await client.listings.search({
+      model: `Obo${stamp}`,
+      acceptsOffers: false,
+      limit: 50,
+    });
+    expect(all).toHaveLength(2);
+  }, 180_000);
+});

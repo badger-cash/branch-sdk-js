@@ -122,9 +122,38 @@ export interface BrowseOptions {
 }
 
 export interface SearchOptions extends BrowseOptions {
-  /** Matched case-insensitively; folded to lower on the way in. */
+  /*
+    THE TEXT FACETS. All eight are matched case-insensitively and folded to
+    lower on the way in, because `create_listing` folds on write and the filter
+    has to compare against what was stored.
+
+    They cost ONE join between them, however many are supplied — a single pass
+    over `metadata` keeping the listings that matched every requested
+    (identifier, value) pair. Adding a ninth is free.
+
+    A listing that said nothing about a facet is excluded by a filter on it,
+    which is the point of writing no row for an unanswered field: absent is
+    genuinely absent rather than an empty string masquerading as an answer.
+  */
   make?: string;
   model?: string;
+  bodyStyle?: string;
+  transmission?: string;
+  fuelType?: string;
+  exteriorColor?: string;
+  condition?: string;
+  titleStatus?: string;
+
+  /**
+   * Only `true` narrows; `false` and `undefined` do not filter at all.
+   *
+   * "Cars whose seller declined offers" is not a search anybody performs, and
+   * offering it would quietly exclude every listing published before the field
+   * existed — those are null, not false.
+   */
+  acceptsOffers?: boolean;
+  acceptsTrade?: boolean;
+
   /** Inclusive. */
   yearFrom?: number;
   yearTo?: number;
@@ -457,23 +486,57 @@ export class ListingsClient {
     const where: string[] = [];
     const params: Record<string, unknown> = { $take: limit };
 
-    if (options.make !== undefined) {
-      // Folded, not lower()ed in SQL. create_listing folds on write, so a bare
-      // equality stays on the index; lower(value_text) here would scan every
-      // row, because kwil has no expression indexes.
-      params.$make = options.make.trim().toLowerCase();
-      joins.push(
-        `JOIN metadata mk ON mk.entity_type = 'token' AND mk.entity_id = t.id
-                         AND mk.identifier = 'make' AND mk.value_text = $make
-                         AND mk.deleted_at IS NULL`
-      );
+    /*
+      ONE JOIN FOR EVERY TEXT FACET, however many there are.
+
+      This used to be a JOIN per predicate, and the comment below the old code
+      drew its own line: "comfortable at three or four. If the product grows to
+      a dozen facets this wants revisiting rather than more joins." Then #24
+      added eight facets, which would have taken a filtered browse past twenty
+      joins — so this is the revisiting.
+
+      The shape is one pass over `metadata` collecting the (identifier, value)
+      pairs asked for, grouped per listing, keeping only those that matched ALL
+      of them. `count(DISTINCT identifier)` rather than `count(*)`: an
+      identifier is unique per entity today, but a duplicate row would
+      otherwise let one satisfied facet stand in for two.
+
+      The twentieth facet now costs what the second does.
+
+      Values are folded rather than `lower()`ed in SQL: `create_listing` folds
+      on write, so a bare equality stays on `metadata_lookup_idx`, and
+      `lower(value_text)` here would scan every row because kwil has no
+      expression indexes.
+    */
+    const facets: Array<[string, string | undefined]> = [
+      ['make', options.make],
+      ['model', options.model],
+      ['body_style', options.bodyStyle],
+      ['transmission', options.transmission],
+      ['fuel_type', options.fuelType],
+      ['exterior_color', options.exteriorColor],
+      ['condition', options.condition],
+      ['title_status', options.titleStatus],
+    ];
+
+    const pairs: string[] = [];
+    for (const [identifier, value] of facets) {
+      if (value === undefined || value.trim() === '') continue;
+      const key = `$f${pairs.length}`;
+      params[key] = value.trim().toLowerCase();
+      pairs.push(`(identifier = '${identifier}' AND value_text = ${key})`);
     }
-    if (options.model !== undefined) {
-      params.$model = options.model.trim().toLowerCase();
+
+    if (pairs.length > 0) {
+      params.$facets = pairs.length;
       joins.push(
-        `JOIN metadata mo ON mo.entity_type = 'token' AND mo.entity_id = t.id
-                         AND mo.identifier = 'model' AND mo.value_text = $model
-                         AND mo.deleted_at IS NULL`
+        `JOIN ( SELECT entity_id
+                  FROM metadata
+                 WHERE entity_type = 'token' AND deleted_at IS NULL
+                   AND ( ${pairs.join('\n                      OR ')} )
+                 GROUP BY entity_id
+                HAVING count(DISTINCT identifier) = $facets ) fac
+              ON fac.entity_id = t.id`
       );
     }
 
@@ -489,6 +552,35 @@ export class ListingsClient {
         `JOIN metadata my ON my.entity_type = 'token' AND my.entity_id = t.id
                          AND my.identifier = 'year' AND my.deleted_at IS NULL
                          AND ${yearBounds.join(' AND ')}`
+      );
+    }
+
+    /*
+      The flags are NOT in the pair join, because they are a different column.
+      `value_boolean` rather than `value_text`, so folding them into the same
+      OR chain would mean matching text against a boolean column — and there
+      are at most two of them, so a join each is the honest cost.
+
+      Only `true` is filterable, deliberately. "Show me cars whose seller
+      declined offers" is not a search anybody performs, and offering it would
+      quietly exclude every listing published before the field existed, whose
+      value is null rather than false.
+    */
+    if (options.acceptsOffers === true) {
+      joins.push(
+        // fao, not mao: the PROJECTION already uses mao for this same
+        // identifier, and reusing it gives `table name "mao" specified more
+        // than once` -- refused by the planner, not by the type checker.
+        `JOIN metadata fao ON fao.entity_type = 'token' AND fao.entity_id = t.id
+                          AND fao.identifier = 'accepts_offers'
+                          AND fao.value_boolean = true AND fao.deleted_at IS NULL`
+      );
+    }
+    if (options.acceptsTrade === true) {
+      joins.push(
+        `JOIN metadata fat ON fat.entity_type = 'token' AND fat.entity_id = t.id
+                          AND fat.identifier = 'accepts_trade'
+                          AND fat.value_boolean = true AND fat.deleted_at IS NULL`
       );
     }
 
