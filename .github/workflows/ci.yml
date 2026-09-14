@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Both, and not as belt-and-braces. 18 is the support floor this package
+      # promises; 22 is a current LTS. A library that works on 22 and breaks on
+      # 18 is broken, and the only way to know is to run it on 18.
+      fail-fast: false
+      matrix:
+        node: [18, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # THIS PACKAGE SHIPS A DEPENDENCY TREE, which is what makes the floor a
+      # promise to somebody else rather than a local convenience. A consumer
+      # installs these dependencies on their own server; one that quietly needs
+      # Node 20 fails there, where the only remedy is a runtime upgrade they
+      # will not do. `npm ci` also fails if the lockfile and package.json
+      # disagree, so what CI tests is what the lockfile describes.
+      - name: Install from the lockfile
+        run: npm ci
+
+      # Listed separately rather than as one `npm run check`, so a failure says
+      # which stage broke instead of requiring somebody to read the log.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      # Includes engines.test.ts, which walks the PRODUCTION dependency tree
+      # from the lockfile and fails naming the package that raised the floor.
+      # That test checks what the lockfile claims; running the suite on Node 18
+      # checks what the code does. They fail differently and both matter.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
