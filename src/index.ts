@@ -14,6 +14,9 @@ export type { KwilEthSigner, PrivyEthereumWallet } from './signer.js';
 export { authTypeOf, canonicalAddress, isCanonicalAddress } from './address.js';
 export type { AuthType, CanonicalAddress } from './address.js';
 
+export { CustodiansClient, objectUrl } from './custodians.js';
+export type { CustodianEndpoint } from './custodians.js';
+
 export { BranchClient, fetchChainId, NAMESPACE, numeric } from './client.js';
 export type { ActionInputs, ActionTypes, ConnectOptions, DataInfo, KwilLike } from './client.js';
 
