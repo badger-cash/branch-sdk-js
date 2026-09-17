@@ -1,6 +1,7 @@
 import { toAmount, toUnits } from './amount.js';
 import { numeric } from './client.js';
 import { BranchError } from './errors.js';
+import { objectUrl } from './custodians.js';
 
 import type { CreditAmount } from './amount.js';
 import type { BranchClient } from './client.js';
@@ -245,6 +246,7 @@ export interface CreateListingInput {
 }
 
 interface SummaryRow {
+  photo_base: unknown;
   id: unknown;
   name: unknown;
   created_at: unknown;
@@ -260,6 +262,7 @@ interface SummaryRow {
 }
 
 interface DetailRow {
+  photo_base: unknown;
   listing_id: unknown;
   title: unknown;
   state: unknown;
@@ -387,8 +390,29 @@ export class ListingsClient {
               ft.value_text AS fuel_type, ec.value_text AS exterior_color,
               cd.value_text AS condition, ts.value_text AS title_status,
               ao.value_boolean AS accepts_offers,
-              at.value_boolean AS accepts_trade
+              at.value_boolean AS accepts_trade,
+              phe.url AS photo_base
          FROM tokens t
+         /*
+           THE CUSTODIAN COMES BACK WITH THE ROWS, not from a second query.
+           photos holds object keys, so rendering one needs the custodian's
+           current address -- and asking separately costs a round trip per page
+           AND makes the grid paint placeholders first and swap the pictures in
+           when the second answer lands. It is one row joined against a
+           single-row table; there is no reason for it to be a second trip.
+
+           The custodian is declared on the SHARED photos field
+           (token_class_id IS NULL), so this resolves once for every row rather
+           than per listing.
+         */
+         LEFT JOIN metadata_schemas phs ON phs.entity_type = 'token'
+                               AND phs.identifier = 'photos'
+                               AND phs.token_class_id IS NULL
+                               AND phs.deleted_at IS NULL
+         LEFT JOIN custodian_endpoints phe
+                               ON (phe.group_id = phs.custodian_group_id
+                                OR phe.person_id = phs.custodian_person_id)
+                               AND phe.deleted_at IS NULL
          JOIN token_class_states st ON st.id = t.current_state_id
          JOIN people p              ON p.id = t.issuer_person_id
          LEFT JOIN metadata mk ON mk.entity_type = 'token' AND mk.entity_id = t.id
@@ -450,7 +474,7 @@ export class ListingsClient {
       mileage: toUnits(row.mileage, 'mileage'),
       vin: asText(row.vin, 'vin'),
       description: asText(row.description, 'description'),
-      photos: parsePhotos(row.photos),
+      photos: parsePhotos(row.photos, row.photo_base),
       contactVia: asText(row.contact_via, 'contact_via'),
       listedAt: toDate(row.listed_at),
       bodyStyle: asOptionalText(row.body_style),
@@ -609,9 +633,31 @@ export class ListingsClient {
               mlv.value_text  AS location,
               mao.value_boolean AS accepts_offers,
               mat.value_boolean AS accepts_trade,
-              mph.value_json AS photos
+              mph.value_json AS photos,
+              phe.url AS photo_base
          FROM tokens t
          ${joins.join('\n         ')}
+         /*
+           THE CUSTODIAN COMES BACK WITH THE ROWS, not from a second query.
+           photos holds object keys, so rendering one needs the custodian's
+           current address -- and asking separately costs a round trip per page
+           AND makes the grid paint placeholders first and swap the pictures in
+           when the second answer lands. It is one row joined against a
+           single-row table; there is no reason for it to be a second trip.
+
+           The custodian is declared on the SHARED photos field
+           (token_class_id IS NULL), so this resolves once for every row rather
+           than per listing.
+         */
+         LEFT JOIN metadata_schemas phs ON phs.entity_type = 'token'
+                               AND phs.identifier = 'photos'
+                               AND phs.token_class_id IS NULL
+                               AND phs.deleted_at IS NULL
+         LEFT JOIN custodian_endpoints phe
+                               ON (phe.group_id = phs.custodian_group_id
+                                OR phe.person_id = phs.custodian_person_id)
+                               AND phe.deleted_at IS NULL
+
          LEFT JOIN metadata mkv ON mkv.entity_type = 'token' AND mkv.entity_id = t.id
                                AND mkv.identifier = 'make' AND mkv.deleted_at IS NULL
          LEFT JOIN metadata mov ON mov.entity_type = 'token' AND mov.entity_id = t.id
@@ -693,7 +739,7 @@ export class ListingsClient {
       listedAt: toDate(row.created_at),
       acceptsOffers: asOptionalBoolean(row.accepts_offers),
       acceptsTrade: asOptionalBoolean(row.accepts_trade),
-      photos: parsePhotos(row.photos),
+      photos: parsePhotos(row.photos, row.photo_base),
     };
   }
 
@@ -860,7 +906,7 @@ function toDate(value: unknown): Date {
 
 /** `photos` is one metadata row holding a JSON array, because an identifier
  * cannot repeat on one entity. */
-function parsePhotos(value: unknown): string[] {
+function parsePhotoKeys(value: unknown): string[] {
   if (typeof value !== 'string' || value === '') return [];
   try {
     const parsed: unknown = JSON.parse(value);
@@ -868,6 +914,34 @@ function parsePhotos(value: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Photographs as a browser can fetch them, composed from the custodian address
+ * that came back with the row.
+ *
+ * WHAT IS ON CHAIN IS AN OPAQUE KEY. The base arrives from the same query
+ * rather than a second one, so a caller never holds a key it cannot render and
+ * a grid never paints placeholders and then swaps in pictures.
+ *
+ * A key that cannot be resolved is DROPPED. If no custodian has announced there
+ * is no address to build, and a relative path would render as a broken image
+ * against whatever origin the page happens to be on. An absolute URL passes
+ * through untouched, because listings published before keys replaced URLs carry
+ * one and still have to render.
+ */
+function parsePhotos(value: unknown, base: unknown): string[] {
+  const keys = parsePhotoKeys(value);
+  const host = typeof base === 'string' && base !== '' ? base : null;
+  return keys
+    .map((key) =>
+      key.startsWith('http://') || key.startsWith('https://')
+        ? key
+        : host
+          ? objectUrl(host, key)
+          : null
+    )
+    .filter((url): url is string => url !== null);
 }
 
 /**

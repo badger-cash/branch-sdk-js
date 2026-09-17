@@ -48,8 +48,8 @@ describe('custodians', () => {
 
     await client.custodians.forListingPhotos();
 
-    const [, params] = kwil.selectQuery.mock.calls[0]!;
-    expect(params).toEqual({ $entity_type: 'token', $identifier: 'photos' });
+    const call = kwil.selectQuery.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(call[1]).toEqual({ $entity_type: 'token', $identifier: 'photos' });
   });
 
   it('returns null rather than throwing when nobody is reachable', async () => {
@@ -117,6 +117,19 @@ describe('objectUrl', () => {
     // tomorrow, and the chain stores whatever it issued.
     expect(objectUrl('https://c.test', 'no-extension-at-all')).toBe(
       'https://c.test/objects/no-extension-at-all'
+    );
+  });
+});
+
+describe('photos arrive resolved, in one response', () => {
+  it('is why the endpoint is joined into the listing queries', () => {
+    // The custodian address comes back on the row rather than from a second
+    // query. Asking separately costs a round trip per page AND makes a grid
+    // paint placeholders first and swap pictures in when the second answer
+    // lands. `listings.test.ts` covers the mapping; this records the reason,
+    // because the join looks removable to anyone who does not know it.
+    expect(objectUrl('https://custodian.test', 'a.jpg')).toBe(
+      'https://custodian.test/objects/a.jpg'
     );
   });
 });
