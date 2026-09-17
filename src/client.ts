@@ -10,6 +10,7 @@ import {
   parseNodeFailure,
 } from './errors.js';
 import { CreditsClient } from './credits.js';
+import { CustodiansClient } from './custodians.js';
 import { IdentityClient } from './identity.js';
 import { ListingsClient } from './listings.js';
 
@@ -131,6 +132,11 @@ export async function fetchChainId(provider: string): Promise<string> {
 export class BranchClient {
   readonly identity: IdentityClient;
   readonly credits: CreditsClient;
+  /**
+   * Resolving a custodian to an address. Unsigned, because a signed-out
+   * browser has to render listings and their photographs.
+   */
+  readonly custodians: CustodiansClient;
   readonly listings: ListingsClient;
 
   private constructor(
@@ -146,6 +152,7 @@ export class BranchClient {
   ) {
     this.identity = new IdentityClient(this);
     this.credits = new CreditsClient(this);
+    this.custodians = new CustodiansClient(this);
     this.listings = new ListingsClient(this);
   }
 

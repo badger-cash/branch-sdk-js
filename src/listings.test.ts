@@ -255,6 +255,7 @@ describe('get', () => {
       vin: '1hgbh41jxmn109186',
       description: 'Runs well.',
       photos: '["a.jpg"]',
+      photo_base: 'https://custodian.test',
       contact_via: 'CNMI Central',
       listed_at: 1788224916,
     });
@@ -265,7 +266,9 @@ describe('get', () => {
       state: 'active',
       make: 'toyota',
       year: 2018,
-      photos: ['a.jpg'],
+      // Composed against the custodian address that came back with the row,
+      // so a caller never holds a key it cannot fetch.
+      photos: ['https://custodian.test/objects/a.jpg'],
       contactVia: 'CNMI Central',
     });
     // '12750' at scale 10 is 127500000000000 units, not 12750.
