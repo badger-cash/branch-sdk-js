@@ -257,10 +257,13 @@ describe('mine', () => {
     ]);
 
     const mine = await client.listings.mine();
-    expect(mine[0].expiresAt).toEqual(new Date(ends * 1000));
+    expect(mine).toHaveLength(2);
+    // Optional chaining because noUncheckedIndexedAccess is on, and it costs
+    // nothing here: undefined fails both assertions as loudly as a wrong value.
+    expect(mine[0]?.expiresAt).toEqual(new Date(ends * 1000));
     // Null is an answer: a listing published without a duration never lapses,
     // and inventing a date here would tell a seller theirs had ended.
-    expect(mine[1].expiresAt).toBeNull();
+    expect(mine[1]?.expiresAt).toBeNull();
   });
 });
 
