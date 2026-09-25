@@ -65,6 +65,14 @@ export interface ListingSummary {
 
 /** Everything on one advertisement. */
 export interface Listing extends ListingSummary {
+  /**
+   * When the paid term ends, or null for a listing published without one.
+   *
+   * Stored and enforced long before it was returned: search drops an expired
+   * listing in its WHERE, but nothing selected the column, so no UI could show
+   * a seller the duration they had paid for.
+   */
+  expiresAt: Date | null;
   state: string;
   seller: string;
   mileage: bigint;
@@ -100,6 +108,8 @@ export interface OwnListing {
   title: string;
   state: string;
   listedAt: Date;
+  /** When the paid term ends, or null for a listing published without one. */
+  expiresAt: Date | null;
 }
 
 /**
@@ -262,6 +272,7 @@ interface SummaryRow {
 }
 
 interface DetailRow {
+  expires_at: unknown;
   photo_base: unknown;
   listing_id: unknown;
   title: unknown;
@@ -294,6 +305,7 @@ interface OwnRow {
   name: unknown;
   created_at: unknown;
   state: unknown;
+  expires_at: unknown;
 }
 
 /**
@@ -386,6 +398,7 @@ export class ListingsClient {
               mi.value_number AS mileage, vi.value_text AS vin,
               de.value_text AS description, ph.value_json AS photos,
               cg.name AS contact_via, t.created_at AS listed_at,
+              ex.value_datetime AS expires_at,
               bs.value_text AS body_style, tr.value_text AS transmission,
               ft.value_text AS fuel_type, ec.value_text AS exterior_color,
               cd.value_text AS condition, ts.value_text AS title_status,
@@ -454,6 +467,14 @@ export class ListingsClient {
                               AND ao.identifier = 'accepts_offers' AND ao.deleted_at IS NULL
          LEFT JOIN metadata at ON at.entity_type = 'token' AND at.entity_id = t.id
                               AND at.identifier = 'accepts_trade' AND at.deleted_at IS NULL
+        /*
+          WHEN THE PAID TERM ENDS. It was stored and enforced and never
+          returned: search joins it into its WHERE to drop expired listings,
+          but nothing selected it, so no UI could show it even if it wanted to.
+          A seller paid for a duration they had no way to see.
+        */
+        LEFT JOIN metadata ex ON ex.entity_type = 'token' AND ex.entity_id = t.id
+                             AND ex.identifier = 'expires_at' AND ex.deleted_at IS NULL
         WHERE t.id = $token_id AND t.deleted_at IS NULL`,
       { $token_id: asQueryInt(BigInt(listingId)) }
     );
@@ -477,6 +498,7 @@ export class ListingsClient {
       photos: parsePhotos(row.photos, row.photo_base),
       contactVia: asText(row.contact_via, 'contact_via'),
       listedAt: toDate(row.listed_at),
+      expiresAt: toOptionalDate(row.expires_at),
       bodyStyle: asOptionalText(row.body_style),
       transmission: asOptionalText(row.transmission),
       fuelType: asOptionalText(row.fuel_type),
@@ -700,10 +722,14 @@ export class ListingsClient {
    */
   async mine(options: { limit?: number } = {}): Promise<OwnListing[]> {
     const rows = await this.client.query<OwnRow>(
-      `SELECT t.id, t.name, t.created_at, s.name AS state
+      `SELECT t.id, t.name, t.created_at, s.name AS state,
+              ex.value_datetime AS expires_at
          FROM tokens t
          JOIN token_class_states s ON s.id = t.current_state_id
          JOIN person_keys k        ON k.person_id = t.issuer_person_id
+         /* The seller paid for the term, so this is the page that most needs it. */
+         LEFT JOIN metadata ex ON ex.entity_type = 'token' AND ex.entity_id = t.id
+                              AND ex.identifier = 'expires_at' AND ex.deleted_at IS NULL
         WHERE t.token_class_id = $class_id
           AND k.address = $address
           AND k.confirmed_at IS NOT NULL
@@ -723,6 +749,7 @@ export class ListingsClient {
       title: asText(row.name, 'name'),
       state: asText(row.state, 'state'),
       listedAt: toDate(row.created_at),
+      expiresAt: toOptionalDate(row.expires_at),
     }));
   }
 
@@ -902,6 +929,18 @@ function asOptionalBoolean(value: unknown): boolean | null {
 
 function toDate(value: unknown): Date {
   return new Date(Number(toUnits(value, 'timestamp')) * 1000);
+}
+
+/**
+ * An expiry, or null when the listing has none.
+ *
+ * Null is a real answer rather than a missing one: `expires_at` is optional
+ * metadata, so a listing published without a duration never lapses. Coercing
+ * that to a date would invent an expiry the chain does not hold, and the UI
+ * would then tell a seller their listing had ended.
+ */
+function toOptionalDate(value: unknown): Date | null {
+  return value === null || value === undefined ? null : toDate(value);
 }
 
 /** `photos` is one metadata row holding a JSON array, because an identifier
