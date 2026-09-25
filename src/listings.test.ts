@@ -231,6 +231,40 @@ describe('mine', () => {
     // Not filtered to active: a seller needs to see what they withdrew or sold.
     expect(mine?.sql).not.toContain('current_state_id = $active');
   });
+
+  /*
+    The expiry has to be SELECTED, not merely joined.
+
+    That distinction is the whole of island-nook#95: `search` already joined
+    expires_at into its WHERE to drop expired listings, so the column was in the
+    query and absent from the result, and no UI could show a seller the term
+    they had paid for. A test that only checked for the identifier would have
+    passed against that bug.
+  */
+  it('selects the expiry rather than only filtering on it', async () => {
+    const { client, queries } = await connect();
+    await client.listings.mine();
+
+    const mine = queries.find((q) => q.sql.includes('person_keys'));
+    expect(mine?.sql).toContain('value_datetime AS expires_at');
+  });
+
+  it('maps the expiry, and leaves it null when a listing has none', async () => {
+    const ends = 1792000000;
+    const { client } = await connect([
+      { id: 1, name: 'With a term', created_at: 1789000000, state: 'active', expires_at: ends },
+      { id: 2, name: 'Without one', created_at: 1789000000, state: 'active', expires_at: null },
+    ]);
+
+    const mine = await client.listings.mine();
+    expect(mine).toHaveLength(2);
+    // Optional chaining because noUncheckedIndexedAccess is on, and it costs
+    // nothing here: undefined fails both assertions as loudly as a wrong value.
+    expect(mine[0]?.expiresAt).toEqual(new Date(ends * 1000));
+    // Null is an answer: a listing published without a duration never lapses,
+    // and inventing a date here would tell a seller theirs had ended.
+    expect(mine[1]?.expiresAt).toBeNull();
+  });
 });
 
 describe('get', () => {
