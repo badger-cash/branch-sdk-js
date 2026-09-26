@@ -217,6 +217,79 @@ describe('key lifecycle', () => {
   });
 });
 
+describe('myOffices', () => {
+  it('maps an office, slug and title kept apart', async () => {
+    const { client } = await connect({
+      callResult: [
+        {
+          role_id: 2,
+          group_id: 1,
+          name: 'listing-moderator',
+          title: 'Listing Moderator',
+          started_at: 1788224916,
+        },
+      ],
+    });
+
+    const offices = await client.identity.myOffices();
+    expect(offices).toHaveLength(1);
+    expect(offices[0]?.roleId).toBe(2n);
+    expect(offices[0]?.groupId).toBe(1n);
+    // The slug is what a caller matches on and the title is what it shows.
+    // Collapsing them would make the match depend on operator configuration.
+    expect(offices[0]?.name).toBe('listing-moderator');
+    expect(offices[0]?.title).toBe('Listing Moderator');
+    expect(offices[0]?.startedAt).toEqual(new Date(1788224916 * 1000));
+  });
+
+  it('goes through the action, never a SELECT', async () => {
+    const { client, calls } = await connect({ callResult: [] });
+    await client.identity.myOffices();
+    /*
+      The join is expressible as a query and must not be one: holds_office
+      tests `started_at <= @block_timestamp`, and a selectQuery has no block
+      context, so a client could only compare against its own clock. Benign for
+      an office started at 0, wrong for a future-dated appointment.
+
+      This harness records actions rather than raw queries, so the assertion is
+      that the office read IS an action call by that name -- if it were a
+      SELECT, no call would be recorded at all.
+    */
+    const office = calls.filter((c) => c.kind === 'call' && c.name === 'my_offices');
+    expect(office).toHaveLength(1);
+  });
+});
+
+describe('holdsOffice', () => {
+  it('matches on the slug, and distinguishes the two offices', async () => {
+    const { client } = await connect({
+      callResult: [
+        {
+          role_id: 2,
+          group_id: 1,
+          name: 'listing-moderator',
+          title: 'Listing Moderator',
+          started_at: 0,
+        },
+      ],
+    });
+
+    await expect(client.identity.holdsOffice('listing-moderator')).resolves.toBe(true);
+    /*
+      Moderating and setting the listing fee are different offices on the
+      chain -- moderate_listing requires listing-moderator, set_listing_fee
+      requires admin. A UI treating "holds an office" as one thing would offer
+      the fee editor to somebody the node refuses.
+    */
+    await expect(client.identity.holdsOffice('admin')).resolves.toBe(false);
+  });
+
+  it('is false when the caller holds nothing', async () => {
+    const { client } = await connect({ callResult: [] });
+    await expect(client.identity.holdsOffice('listing-moderator')).resolves.toBe(false);
+  });
+});
+
 describe('myKeys', () => {
   it('maps status, label and timestamp', async () => {
     const { client } = await connect({

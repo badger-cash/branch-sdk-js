@@ -72,6 +72,39 @@ interface KeyRow {
  * before returning, so a refusal arrives as an exception rather than as a
  * transaction hash that happens to mean nothing.
  */
+/**
+ * An office the caller currently holds.
+ *
+ * AN OFFICE IS NOT A PERMISSION THIS CLIENT GRANTS. The chain enforces its own:
+ * `moderate_listing` and `set_listing_fee` call `require_office`, so a caller
+ * without it is refused by the node whatever a client believes. This is for
+ * deciding what to OFFER -- a button shown to somebody the node will refuse is
+ * a refusal they cannot act on.
+ *
+ * Treating a `true` from here as authority would reimplement the check in the
+ * one place that cannot enforce it.
+ */
+export interface Office {
+  /** The role's own id. Stable; what `require_office` compares against. */
+  roleId: bigint;
+  /** The group the office belongs to. */
+  groupId: bigint;
+  /** The canonical lowercase slug -- `listing-moderator`, `admin`. Match on this. */
+  name: string;
+  /** The operator-configured label -- "Listing Moderator". Show this. */
+  title: string;
+  /** When the term began. */
+  startedAt: Date;
+}
+
+interface OfficeRow {
+  role_id: unknown;
+  group_id: unknown;
+  name: unknown;
+  title: unknown;
+  started_at: unknown;
+}
+
 export class IdentityClient {
   constructor(private readonly client: BranchClient) {}
 
@@ -162,6 +195,44 @@ export class IdentityClient {
     return await this.client.write('revoke_key', {
       $address: canonicalAddress(address),
     });
+  }
+
+  /**
+   * Every office the caller currently holds.
+   *
+   * Through the action rather than a SELECT, and that is not a style choice.
+   * `SELECT` is granted, so this join is expressible client-side -- but
+   * `holds_office` tests `started_at <= @block_timestamp`, and a query has no
+   * block context. A client could only compare against its own clock, which is
+   * benign for the seeded offices and wrong for a future-dated appointment:
+   * precisely the case somebody scheduled on purpose. The action carries the
+   * chain's own predicate.
+   *
+   * Ended terms are omitted: `group_appointments` is a history, so "held once"
+   * and "holds now" are different questions and authority turns on the second.
+   */
+  async myOffices(): Promise<Office[]> {
+    const rows = await this.client.read<OfficeRow>('my_offices');
+    return rows.map((row) => ({
+      roleId: toBigInt(row.role_id, 'role_id'),
+      groupId: toBigInt(row.group_id, 'group_id'),
+      name: asString(row.name, 'name'),
+      title: asString(row.title, 'title'),
+      startedAt: new Date(Number(toBigInt(row.started_at, 'started_at')) * 1000),
+    }));
+  }
+
+  /**
+   * Whether the caller holds a named office, by slug.
+   *
+   * Offered so every caller does not re-implement the same `.some()` over a
+   * slug, and spell it differently. `listing-moderator` and `admin` are
+   * different offices governing different actions -- taking an advertisement
+   * down and changing what advertisements cost are separate authorities -- so
+   * asking for "an office" is never the right question.
+   */
+  async holdsOffice(name: string): Promise<boolean> {
+    return (await this.myOffices()).some((office) => office.name === name);
   }
 
   /** Every key on the caller's account, oldest first, with its standing. */
