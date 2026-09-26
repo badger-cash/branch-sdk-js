@@ -40,6 +40,6 @@ export type {
 } from './listings.js';
 
 export { IdentityClient } from './identity.js';
-export type { KeyRecord, KeyStatus, Person } from './identity.js';
+export type { KeyRecord, KeyStatus, Office, Person } from './identity.js';
 
 export { ActionFailedError, BranchError, UnconfirmedTransactionError } from './errors.js';
