@@ -264,7 +264,13 @@ describe('holdsOffice', () => {
   it('matches on the slug, and distinguishes the two offices', async () => {
     const { client } = await connect({
       callResult: [
-        { role_id: 2, group_id: 1, name: 'listing-moderator', title: 'Listing Moderator', started_at: 0 },
+        {
+          role_id: 2,
+          group_id: 1,
+          name: 'listing-moderator',
+          title: 'Listing Moderator',
+          started_at: 0,
+        },
       ],
     });
 
