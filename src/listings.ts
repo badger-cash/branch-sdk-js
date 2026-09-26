@@ -374,6 +374,53 @@ export class ListingsClient {
   }
 
   /**
+   * Take a listing down, as the listing-moderator office.
+   *
+   * NOT `close`. A seller ending their own advertisement and a moderator
+   * removing somebody else's are different acts with different authority, and
+   * the chain records them differently: this writes a `moderated` event
+   * carrying the acting role and the reason, so the takedown is attributable
+   * afterwards to the office that made it.
+   *
+   * The reason is mandatory and the action refuses an empty one -- a takedown
+   * nobody has to justify is a takedown nobody can review.
+   *
+   * Authority is the chain's. `require_office` refuses a caller who does not
+   * hold `listing-moderator`, and the refusal arrives as an ActionFailedError
+   * whatever a client believed when it offered the button.
+   */
+  async moderate(listingId: bigint | number, reason: string): Promise<string> {
+    return await this.client.write('moderate_listing', {
+      $token_id: asActionInt(listingId),
+      $reason: reason,
+    });
+  }
+
+  /**
+   * Set what a listing of a given duration costs.
+   *
+   * A DIFFERENT OFFICE FROM MODERATION, and the separation is deliberate on the
+   * chain: `set_listing_fee` requires `admin`, while `moderate_listing`
+   * requires `listing-moderator`. Taking an advertisement down and changing
+   * what advertisements cost are not the same authority, so a UI that treats
+   * "holds an office" as one thing will offer this to somebody the node
+   * refuses.
+   *
+   * The fee is NUMERIC(38,10) and is declared: nothing infers to NUMERIC, so a
+   * string would infer text and a number int8, and the action refuses both.
+   */
+  async setFee(durationDays: bigint | number, fee: string | number): Promise<string> {
+    return await this.client.write(
+      'set_listing_fee',
+      {
+        $duration_days: asActionInt(durationDays),
+        $fee: decimalString(fee, 'fee'),
+      },
+      { $fee: numeric(38, 10) }
+    );
+  }
+
+  /**
    * One advertisement, in full. Null when nothing has that id.
    *
    * A PLAIN SELECT RATHER THAN get_listing, and the difference is who can call
