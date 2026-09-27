@@ -56,10 +56,20 @@ meant an anonymous visitor could not look at a classified advertisement without
 first creating an account — backwards for a marketplace, and the reason this
 exists.
 
-Opening one works too — `listings.get` is a plain SELECT for the same reason.
-`get_listing` is a view action and view actions are signed, so routing detail
-through it meant a visitor could see the grid and not the car. The action has no
-`@caller` in it, so the pivot happens client-side instead, join for join.
+Opening one works too — `listings.get` is a plain SELECT, which keeps the
+custodian joins that turn an object key into a URL and a custodian id into a
+name, both in the same round trip.
+
+**A view action is not always signed, and this README used to say it was.** The
+claim was that routing detail through `get_listing` meant a visitor could see
+the grid and not the car. badger-cash/branch#66 settled it the other way: a
+`PUBLIC VIEW` action reading no `@caller` needs no signer, because kwil only
+requires a signature on a message that carries a sender
+(`core/types/message.go:83`), and `branch`'s `test/e2e/generic-reads.sh` calls
+the generic reads unsigned against a node. What remains true is that
+`BranchClient.read` requires one — *most* view actions do read `@caller`, and
+this package has no way to know which — so an unsigned view call is not
+reachable through it today.
 
 `query` is the whole of a read-only client. `read` and `write` reject on it and
 say why: a view action is *signed*, because most of them read `@caller`, so that
@@ -202,6 +212,20 @@ so an `INT8` bound into a plain SELECT has to cross as a number. The client
 checks it against `Number.MAX_SAFE_INTEGER` and throws rather than binding a
 value that would match the wrong row.
 
+### Sending an array parameter, and the empty one
+
+An array of booleans or integers infers correctly — until it is **empty**.
+kwil-js resolves an array's element type from `value[0]`, so `[]` reads
+`undefined` and resolves to `null[]`, which the engine refuses against a
+declared `BOOL[]` or `INT8[]`. An action taking parallel key/value arrays —
+`mint_token` takes six pairs — normally has most of them empty, so this is the
+common case rather than an edge one. `textArray`, `boolArray`, `intArray` and
+`numericArray(p, s)` declare them:
+
+```ts
+import { boolArray, intArray, numericArray, textArray } from '@badger-cash/branch-sdk-js';
+```
+
 ## Listings
 
 ```ts
@@ -222,8 +246,10 @@ await client.listings.close(id, 'sold');
 is `@block_timestamp`, so every listing minted in one block shares a value and
 paging on it alone repeats or skips rows.
 
-**`make`, `model` and `vin` are folded to lower case on write by the action**,
-so a search stays a bare equality on `metadata_lookup_idx`. Putting `lower()`
+**`make`, `model`, `vin` and the descriptors are folded to lower case on
+write** — by the field's `metadata_schemas.folded` declaration now, not by a
+car-shaped action — so a search stays a bare equality on
+`metadata_lookup_idx`. Putting `lower()`
 in the query instead would take every browse off the index — kwil has no
 expression indexes. The seller's own spelling survives in the title.
 

@@ -17,7 +17,16 @@ export type { AuthType, CanonicalAddress } from './address.js';
 export { CustodiansClient, objectUrl } from './custodians.js';
 export type { CustodianEndpoint } from './custodians.js';
 
-export { BranchClient, fetchChainId, NAMESPACE, numeric } from './client.js';
+export {
+  boolArray,
+  BranchClient,
+  fetchChainId,
+  intArray,
+  NAMESPACE,
+  numeric,
+  numericArray,
+  textArray,
+} from './client.js';
 export type { ActionInputs, ActionTypes, ConnectOptions, DataInfo, KwilLike } from './client.js';
 
 export { CreditsClient } from './credits.js';
@@ -26,7 +35,7 @@ export type { CreditEntry, CreditEntryKind, HistoryOptions } from './credits.js'
 export { formatAmount, parseAmount, toAmount } from './amount.js';
 export type { CreditAmount, FormatOptions } from './amount.js';
 
-export { LISTING_SCALE, ListingsClient } from './listings.js';
+export { LISTING_SCALE, LISTING_TYPE_SLUG, ListingsClient } from './listings.js';
 export type {
   BrowseOptions,
   CreateListingInput,

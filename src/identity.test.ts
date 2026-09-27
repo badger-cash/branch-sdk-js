@@ -277,8 +277,9 @@ describe('holdsOffice', () => {
     await expect(client.identity.holdsOffice('listing-moderator')).resolves.toBe(true);
     /*
       Moderating and setting the listing fee are different offices on the
-      chain -- moderate_listing requires listing-moderator, set_listing_fee
-      requires admin. A UI treating "holds an office" as one thing would offer
+      chain -- moderate_token requires the type's burning_role_id, which for
+      this type is listing-moderator, while set_type_fee requires the governing
+      organization's admin. A UI treating "holds an office" as one thing would offer
       the fee editor to somebody the node refuses.
     */
     await expect(client.identity.holdsOffice('admin')).resolves.toBe(false);

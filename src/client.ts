@@ -51,6 +51,33 @@ export function numeric(precision: number, scale: number): DataInfo {
   return Utils.DataType.Numeric(precision, scale);
 }
 
+/**
+ * The array types, for an action that takes parallel key/value arrays.
+ *
+ * AN EMPTY ARRAY INFERS AS `null[]`, WHICH IS THE TRAP THESE EXIST FOR.
+ * kwil-js resolves an array's element type from `value[0]`
+ * (`utils/parameterEncoding.js`), so `[]` reads `undefined` and falls into the
+ * `VarType.NULL` case -- the array is sent as an array of nothing with no
+ * element type, and the engine refuses it against a declared `BOOL[]` or
+ * `INT8[]`. A non-empty array of booleans or integers does infer correctly,
+ * which is what makes this invisible until the one mint that omits a group.
+ *
+ * `mint_token` takes six key/value pairs and a caller normally fills two or
+ * three, so the empty case is the common case rather than the edge. Declaring
+ * all twelve costs nothing and removes the question.
+ *
+ * NUMERIC arrays cannot infer at all, empty or not, for the same reason a
+ * scalar NUMERIC cannot: there is no JavaScript value that resolves to it.
+ */
+export const textArray: DataInfo = Utils.DataType.TextArray;
+export const boolArray: DataInfo = Utils.DataType.BooleanArray;
+export const intArray: DataInfo = Utils.DataType.IntArray;
+
+/** Declare a `NUMERIC(p, s)[]` parameter. See `textArray` for why. */
+export function numericArray(precision: number, scale: number): DataInfo {
+  return Utils.DataType.NumericArray(precision, scale);
+}
+
 export interface KwilLike {
   execute(
     body: {

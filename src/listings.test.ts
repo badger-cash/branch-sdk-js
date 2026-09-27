@@ -37,10 +37,8 @@ async function connect(
       });
       return Promise.resolve({ data: { tx_hash: '0xabc' } });
     },
-    call(body): Promise<{ data?: { result?: unknown } }> {
-      if (body.name === 'get_listing') {
-        return Promise.resolve({ data: { result: detail ? [detail] : [] } });
-      }
+    // No read path calls a view action: every one of them is a plain SELECT.
+    call(): Promise<{ data?: { result?: unknown } }> {
       return Promise.resolve({ data: { result: [] } });
     },
     selectQuery<T extends object>(
@@ -49,9 +47,8 @@ async function connect(
     ): Promise<{ data?: T[] }> {
       queries.push({ sql: query, params: params ?? {} });
       if (query.includes('token_classes')) return Promise.resolve({ data: CLASS_ROW as T[] });
-      // `get` is a plain SELECT now rather than the get_listing view action, so
-      // that a listing can be opened without signing in. It is recognised by
-      // the join no other read makes.
+      // `get` is a plain SELECT, recognised here by the join no other read
+      // makes.
       if (query.includes('token_class_states st')) {
         return Promise.resolve({ data: (detail ? [detail] : []) as T[] });
       }
@@ -83,34 +80,156 @@ const INPUT = {
   description: 'Runs well.',
 };
 
+/** A key/value pair out of one of mint_token's six parallel array groups. */
+function pair(inputs: Record<string, unknown>, keys: string, values: string): Map<string, unknown> {
+  const k = inputs[keys] as string[];
+  const v = inputs[values] as unknown[];
+  expect(k.length).toBe(v.length);
+  return new Map(k.map((identifier, i) => [identifier, v[i]]));
+}
+
 describe('create', () => {
-  it('declares the NUMERIC parameters, because nothing infers to NUMERIC', async () => {
+  it('mints into the type rather than calling the retired create_listing', async () => {
     const { client, writes } = await connect();
     await client.listings.create(INPUT);
 
     const write = writes[0];
-    expect(write?.name).toBe('create_listing');
-    // A string infers text and a number infers int8; the action refuses both.
-    expect(write?.types).toEqual({
-      $price: expect.anything() as unknown,
-      $mileage: expect.anything() as unknown,
-    });
+    // branch#74 dropped create_listing. A directory is a token type now, and
+    // the generic mint is handed one.
+    expect(write?.name).toBe('mint_token');
+    expect(write?.inputs.$type_id).toBe(1);
+    expect(write?.inputs.$state_name).toBe('active');
+    expect(write?.inputs.$duration_days).toBe(30);
+  });
+
+  it('composes the title, because the action no longer does', async () => {
+    // create_listing built `year || ' ' || make || ' ' || model` in straight-line
+    // code. mint_token cannot know that, so this package owns it -- and owns it
+    // here rather than in the front end, so one directory has one convention.
+    const { client, writes } = await connect();
+    await client.listings.create(INPUT);
+    expect(writes[0]?.inputs.$name).toBe('2018 Toyota Corolla');
+  });
+
+  it('does not fold anything, because the declaration still does', async () => {
+    // The fold moved from create_listing's hand-written lower() to
+    // metadata_schemas.folded, which mint_token honours
+    // (41-explicit-mint-policy.sql:1245). Folding here as well would look
+    // harmless and would put this package back in the business of knowing
+    // which of a type's fields are searchable -- and would make the title
+    // disagree with the metadata for any field it got wrong.
+    const { client, writes } = await connect();
+    await client.listings.create({ ...INPUT, make: 'Toyota', vin: '1HGBH41JXMN109186' });
+
+    const text = pair(writes[0]?.inputs ?? {}, '$text_keys', '$text_values');
+    expect(text.get('make')).toBe('Toyota');
+    expect(text.get('vin')).toBe('1HGBH41JXMN109186');
+    expect(text.get('location')).toBe('Susupe');
+    expect(writes[0]?.inputs.$name).toBe('2018 Toyota Corolla');
+  });
+
+  it('is a non-fungible mint, so symbol and quantity are both null', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create(INPUT);
+    // The action refuses either being set on a non-fungible type.
+    expect(writes[0]?.inputs.$symbol).toBeNull();
+    expect(writes[0]?.inputs.$quantity).toBeNull();
+  });
+
+  it('never supplies expires_at, which the chain computes from the term', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create(INPUT);
+    // Supplying one alongside a paid term is refused outright, so that two
+    // clients cannot disagree about what thirty days means.
+    expect(writes[0]?.inputs.$datetime_keys).toEqual([]);
+    expect(writes[0]?.inputs.$datetime_values).toEqual([]);
+  });
+
+  it('declares every array type, because an empty array infers to null[]', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create(INPUT);
+
+    // kwil resolves an array's element type from value[0], so [] reads
+    // undefined and resolves to null[] -- refused against a declared BOOL[] or
+    // INT8[]. Nothing infers to NUMERIC either, empty or not.
+    expect(Object.keys(writes[0]?.types ?? {}).sort()).toEqual([
+      '$boolean_keys',
+      '$boolean_values',
+      '$brokered_hmacs',
+      '$brokered_keys',
+      '$datetime_keys',
+      '$datetime_values',
+      '$json_keys',
+      '$json_values',
+      '$number_keys',
+      '$number_values',
+      '$quantity',
+      '$text_keys',
+      '$text_values',
+    ]);
+  });
+
+  it('keeps every key/value pair the same length', async () => {
+    // unnest zips to the LONGER array and pads the shorter with NULLs, so a
+    // mismatch writes a value against a null identifier rather than failing.
+    const { client, writes } = await connect();
+    await client.listings.create({ ...INPUT, bodyStyle: 'Pickup', acceptsOffers: true });
+
+    const sent = writes[0]?.inputs ?? {};
+    for (const [keys, values] of [
+      ['$text_keys', '$text_values'],
+      ['$number_keys', '$number_values'],
+      ['$boolean_keys', '$boolean_values'],
+      ['$datetime_keys', '$datetime_values'],
+      ['$json_keys', '$json_values'],
+      ['$brokered_keys', '$brokered_hmacs'],
+    ]) {
+      expect((sent[keys!] as unknown[]).length).toBe((sent[values!] as unknown[]).length);
+    }
+  });
+
+  it('sends the mandatory fields in the pair matching their datatype', async () => {
+    const { client, writes } = await connect();
+    await client.listings.create(INPUT);
+    const sent = writes[0]?.inputs ?? {};
+
+    const text = pair(sent, '$text_keys', '$text_values');
+    expect(text.get('make')).toBe('Toyota');
+    expect(text.get('model')).toBe('Corolla');
+    expect(text.get('price_currency')).toBe('credits');
+    expect(text.get('location')).toBe('Susupe');
+    expect(text.get('vin')).toBe('1HGBH41JXMN109186');
+
+    // Decimal strings, with the NUMERIC(38,10)[] type declared beside them.
+    const numbers = pair(sent, '$number_keys', '$number_values');
+    expect(numbers.get('price')).toBe('12750');
+    expect(numbers.get('year')).toBe('2018');
+    expect(numbers.get('mileage')).toBe('90000');
   });
 
   it('sends photos as a JSON array, since an identifier cannot repeat', async () => {
     const { client, writes } = await connect();
     await client.listings.create({ ...INPUT, photos: ['a.jpg', 'b.jpg'] });
-    expect(writes[0]?.inputs.$photos_json).toBe('["a.jpg","b.jpg"]');
+    expect(pair(writes[0]?.inputs ?? {}, '$json_keys', '$json_values').get('photos')).toBe(
+      '["a.jpg","b.jpg"]'
+    );
 
     const { client: bare, writes: bareWrites } = await connect();
     await bare.listings.create(INPUT);
-    expect(bareWrites[0]?.inputs.$photos_json).toBe('[]');
+    expect(pair(bareWrites[0]?.inputs ?? {}, '$json_keys', '$json_values').get('photos')).toBe(
+      '[]'
+    );
   });
 
-  it('passes the commitment through, never contact details', async () => {
+  it('passes the commitment through the brokered pair, never contact details', async () => {
     const { client, writes } = await connect();
     await client.listings.create(INPUT);
-    expect(writes[0]?.inputs.$contact_hmac_hex).toBe('a'.repeat(64));
+    const sent = writes[0]?.inputs ?? {};
+    // A brokered field carries an HMAC and a named custodian, never a value.
+    expect(sent.$brokered_keys).toEqual(['contact']);
+    expect(sent.$brokered_hmacs).toEqual(['a'.repeat(64)]);
+    // And it is nowhere near the text pair.
+    expect(sent.$text_keys).not.toContain('contact');
   });
 
   it('refuses a price that is not a decimal number', async () => {
@@ -125,12 +244,42 @@ describe('create', () => {
 });
 
 describe('close', () => {
-  it('sends the outcome', async () => {
+  it('names the terminal state, which is the type vocabulary now', async () => {
     const { client, writes } = await connect();
     await client.listings.close(42n, 'sold');
     await client.listings.close(43, 'withdrawn');
-    expect(writes[0]?.inputs).toEqual({ $token_id: 42, $outcome: 'sold' });
-    expect(writes[1]?.inputs).toEqual({ $token_id: 43, $outcome: 'withdrawn' });
+    // close_token resolves the target out of the type's own states and requires
+    // it to be terminal, rather than validating a hardcoded pair itself.
+    expect(writes[0]?.name).toBe('close_token');
+    expect(writes[0]?.inputs).toEqual({ $token_id: 42, $state_name: 'sold' });
+    expect(writes[1]?.inputs).toEqual({ $token_id: 43, $state_name: 'withdrawn' });
+  });
+});
+
+describe('moderate', () => {
+  it('takes a listing down to withdrawn, under the type office', async () => {
+    const { client, writes } = await connect();
+    await client.listings.moderate(42, 'counterfeit VIN');
+    expect(writes[0]?.name).toBe('moderate_token');
+    // The state is not a parameter of the public method: there is one terminal
+    // state that means "taken down", and offering a choice would let a
+    // moderator file a takedown as 'sold'.
+    expect(writes[0]?.inputs).toEqual({
+      $token_id: 42,
+      $state_name: 'withdrawn',
+      $reason: 'counterfeit VIN',
+    });
+  });
+});
+
+describe('setFee', () => {
+  it('passes the type, which set_listing_fee used to resolve for itself', async () => {
+    const { client, writes } = await connect();
+    await client.listings.setFee(30, '2');
+    expect(writes[0]?.name).toBe('set_type_fee');
+    expect(writes[0]?.inputs).toEqual({ $type_id: 1, $duration_days: 30, $fee: '2' });
+    // Nothing infers to NUMERIC.
+    expect(writes[0]?.types).toEqual({ $fee: expect.anything() as unknown });
   });
 });
 
@@ -422,38 +571,38 @@ describe('fees', () => {
   node, because a stub answers whatever it is asked.
 */
 describe('optional descriptors', () => {
-  it('sends null for anything the seller left alone', async () => {
+  it('omits the key entirely for anything the seller left alone', async () => {
     const { client, writes } = await connect();
     await client.listings.create(INPUT);
 
     const sent = writes[0]?.inputs ?? {};
-    // NOT an empty string. The action treats '' and NULL alike, but sending
-    // null is what says "unanswered" at the boundary rather than relying on
-    // that equivalence holding.
-    expect(sent.$body_style).toBeNull();
-    expect(sent.$title_status).toBeNull();
-    expect(sent.$accepts_offers).toBeNull();
-    expect(sent.$accepts_trade).toBeNull();
+    // NOT an empty string, and under mint_token not a null either: a key that
+    // is present writes a row, so an unanswered field has to be absent from
+    // the pair altogether.
+    expect(sent.$text_keys).not.toContain('body_style');
+    expect(sent.$text_keys).not.toContain('title_status');
+    expect(sent.$boolean_keys).toEqual([]);
+    expect(sent.$boolean_values).toEqual([]);
   });
 
   it('sends false as false, not as absent', async () => {
     const { client, writes } = await connect();
     await client.listings.create({ ...INPUT, acceptsOffers: true, acceptsTrade: false });
 
-    const sent = writes[0]?.inputs ?? {};
-    expect(sent.$accepts_offers).toBe(true);
-    // The whole point: a seller who declined has answered, and `?? null` must
-    // not collapse that into "never asked".
-    expect(sent.$accepts_trade).toBe(false);
+    const flags = pair(writes[0]?.inputs ?? {}, '$boolean_keys', '$boolean_values');
+    expect(flags.get('accepts_offers')).toBe(true);
+    // The whole point: a seller who declined has answered, and that must not
+    // collapse into "never asked", which here means dropping the key.
+    expect(flags.get('accepts_trade')).toBe(false);
   });
 
   it('passes the descriptors through unfolded, because the chain folds them', async () => {
     const { client, writes } = await connect();
     await client.listings.create({ ...INPUT, bodyStyle: 'Pickup', fuelType: 'Diesel' });
 
-    const sent = writes[0]?.inputs ?? {};
-    expect(sent.$body_style).toBe('Pickup');
-    expect(sent.$fuel_type).toBe('Diesel');
+    const text = pair(writes[0]?.inputs ?? {}, '$text_keys', '$text_values');
+    expect(text.get('body_style')).toBe('Pickup');
+    expect(text.get('fuel_type')).toBe('Diesel');
   });
 
   it('reads a summary flag back, and distinguishes false from never asked', async () => {

@@ -55,9 +55,13 @@ describe('connectReadOnly', () => {
   });
 
   it('opens a listing, which is a page further in than browse', async () => {
-    // get used to call the get_listing view action, and view actions are
-    // signed -- so a visitor could see the grid and not the car. get_listing
-    // has no @caller in it, so the pivot happens here instead.
+    // This used to say "view actions are signed", which is FALSE: a PUBLIC VIEW
+    // action reading no @caller needs no signer (branch#66, kwil-db
+    // core/types/message.go:83). What is true is narrower and is this package's
+    // own policy rather than the chain's -- BranchClient.read requires a signer
+    // because most view actions do read @caller and it cannot tell which. So
+    // the pivot happens in a plain SELECT here, and an anonymous visitor can
+    // open a car.
     const kwil = fakeKwil();
     kwil.selectQuery.mockResolvedValue({
       data: [

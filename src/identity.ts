@@ -76,7 +76,7 @@ interface KeyRow {
  * An office the caller currently holds.
  *
  * AN OFFICE IS NOT A PERMISSION THIS CLIENT GRANTS. The chain enforces its own:
- * `moderate_listing` and `set_listing_fee` call `require_office`, so a caller
+ * `moderate_token` and `set_type_fee` call `require_office`, so a caller
  * without it is refused by the node whatever a client believes. This is for
  * deciding what to OFFER -- a button shown to somebody the node will refuse is
  * a refusal they cannot act on.
