@@ -41,11 +41,11 @@ describe('connectReadOnly', () => {
   });
 
   it('serves the listings read surface, which is the point', async () => {
-    // search resolves the listing class first, then the rows -- two queries,
+    // search resolves the listing type first, then the rows -- two queries,
     // both plain SELECTs, neither signed.
     const kwil = fakeKwil();
     kwil.selectQuery
-      .mockResolvedValueOnce({ data: [{ class_id: '1', state_id: '1' }] })
+      .mockResolvedValueOnce({ data: [{ type_id: '1', state_id: '1' }] })
       .mockResolvedValueOnce({ data: [] });
     const client = await BranchClient.connectReadOnly(options(kwil));
 

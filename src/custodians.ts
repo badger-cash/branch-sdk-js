@@ -68,7 +68,7 @@ export class CustodiansClient {
            ON (e.group_id = s.custodian_group_id OR e.person_id = s.custodian_person_id)
         WHERE s.entity_type = $entity_type
           AND s.identifier = $identifier
-          AND s.token_class_id IS NULL
+          AND s.token_type_id IS NULL
           AND s.deleted_at IS NULL
           AND e.deleted_at IS NULL
         LIMIT 1`,

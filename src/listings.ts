@@ -27,7 +27,7 @@ export const LISTING_TYPE_SLUG = 'automobile-listing';
  * `mint_token` would resolve the lowest-ordinal non-terminal state if handed a
  * null, and `moderate_token` requires a terminal state by name -- both are the
  * generic actions refusing to guess at a type's vocabulary. These two names are
- * what migration 90 gave the automobile class and what the retired actions
+ * what migration 90 gave the automobile type and what the retired actions
  * used; every read path in this file already assumes 'active'.
  */
 const ACTIVE_STATE = 'active';
@@ -142,7 +142,7 @@ export interface OwnListing {
  * `created_at` is `@block_timestamp`, so everything minted in one block has the
  * same value. Paging on it alone repeats or skips rows; the id is the
  * tiebreaker that makes it deterministic, and the browse index
- * `(token_class_id, current_state_id, created_at, id)` is ordered to serve
+ * `(token_type_id, current_state_id, created_at, id)` is ordered to serve
  * exactly this.
  */
 export interface PageCursor {
@@ -201,7 +201,7 @@ export interface SearchOptions extends BrowseOptions {
  * What publishing costs for one of the durations the chain sells.
  *
  * THE TIERS ARE DATA, NOT CONSTANTS. Each rate is a `metadata` row on the
- * automobile token class -- `fee_30d`, `fee_180d` -- precisely so the admin
+ * automobile token type -- `fee_30d`, `fee_180d` -- precisely so the admin
  * office can reprice by transaction instead of by redeploy. A client that
  * hardcodes "30 days costs 1 credit" is a client that shows the wrong price
  * the day after a repricing, and the ledger is the only place that would
@@ -398,8 +398,8 @@ export class ListingsClient {
    *     it cannot know that this type's display line is built from three of its
    *     fields. Composed here rather than in the front end -- one caller
    *     spelling it differently is a directory with two title conventions in it.
-   *   * The type. `create_listing` resolved the automobile class itself;
-   *     `mint_token` takes one. `classAndState` resolves it by `live_slug`.
+   *   * The type. `create_listing` resolved the automobile type itself;
+   *     `mint_token` takes one. `typeAndState` resolves it by `live_slug`.
    *
    * WHAT THE CHAIN STILL OWNS, and must not be duplicated here:
    *
@@ -431,7 +431,7 @@ export class ListingsClient {
    * than any this could raise.
    */
   async create(input: CreateListingInput): Promise<string> {
-    const { $class_id } = await this.classAndState();
+    const { $type_id } = await this.typeAndState();
 
     const text = new FieldPairs();
     text.put('make', input.make);
@@ -463,7 +463,7 @@ export class ListingsClient {
     return await this.client.write(
       'mint_token',
       {
-        $type_id: $class_id,
+        $type_id,
         $state_name: ACTIVE_STATE,
         $name: `${String(input.year)} ${input.make} ${input.model}`,
         // The seller holds their own advertisement: the mint resolves their
@@ -533,7 +533,7 @@ export class ListingsClient {
    * `'sold' | 'withdrawn'` itself; the generic action instead requires the named
    * state to exist on this type and to be terminal -- which is the same two
    * values here, because those are the terminal states migration 90 gave the
-   * automobile class, and is what stops this becoming a "move my record
+   * automobile type, and is what stops this becoming a "move my record
    * anywhere" verb on a type with more of them.
    *
    * Authority is unchanged and is ownership, not an office: the person whose
@@ -559,7 +559,7 @@ export class ListingsClient {
    * nobody has to justify is a takedown nobody can review.
    *
    * Authority is the chain's, and is now read from the TYPE rather than from a
-   * hardcoded class: `moderate_token` looks up `token_classes.burning_role_id`
+   * hardcoded id: `moderate_token` looks up `token_types.burning_role_id`
    * for whatever type the record belongs to and calls `require_office` against
    * it. For the automobile type that is the same `listing-moderator` office
    * `moderate_listing` required, so nothing changes for this caller -- and the
@@ -592,7 +592,7 @@ export class ListingsClient {
    * this to somebody the node refuses.
    *
    * `set_type_fee` TAKES THE TYPE, where `set_listing_fee` resolved the
-   * automobile class for itself. Resolved here through `classAndState`, so the
+   * automobile type for itself. Resolved here through `typeAndState`, so the
    * signature is unchanged: a caller repricing this directory should not have
    * to know its id.
    *
@@ -600,11 +600,11 @@ export class ListingsClient {
    * string would infer text and a number int8, and the action refuses both.
    */
   async setFee(durationDays: bigint | number, fee: string | number): Promise<string> {
-    const { $class_id } = await this.classAndState();
+    const { $type_id } = await this.typeAndState();
     return await this.client.write(
       'set_type_fee',
       {
-        $type_id: $class_id,
+        $type_id,
         $duration_days: asActionInt(durationDays),
         $fee: decimalString(fee, 'fee'),
       },
@@ -672,18 +672,18 @@ export class ListingsClient {
            single-row table; there is no reason for it to be a second trip.
 
            The custodian is declared on the SHARED photos field
-           (token_class_id IS NULL), so this resolves once for every row rather
+           (token_type_id IS NULL), so this resolves once for every row rather
            than per listing.
          */
          LEFT JOIN metadata_schemas phs ON phs.entity_type = 'token'
                                AND phs.identifier = 'photos'
-                               AND phs.token_class_id IS NULL
+                               AND phs.token_type_id IS NULL
                                AND phs.deleted_at IS NULL
          LEFT JOIN custodian_endpoints phe
                                ON (phe.group_id = phs.custodian_group_id
                                 OR phe.person_id = phs.custodian_person_id)
                                AND phe.deleted_at IS NULL
-         JOIN token_class_states st ON st.id = t.current_state_id
+         JOIN token_type_states st ON st.id = t.current_state_id
          JOIN people p              ON p.id = t.issuer_person_id
          LEFT JOIN metadata mk ON mk.entity_type = 'token' AND mk.entity_id = t.id
                               AND mk.identifier = 'make' AND mk.deleted_at IS NULL
@@ -925,12 +925,12 @@ export class ListingsClient {
            single-row table; there is no reason for it to be a second trip.
 
            The custodian is declared on the SHARED photos field
-           (token_class_id IS NULL), so this resolves once for every row rather
+           (token_type_id IS NULL), so this resolves once for every row rather
            than per listing.
          */
          LEFT JOIN metadata_schemas phs ON phs.entity_type = 'token'
                                AND phs.identifier = 'photos'
-                               AND phs.token_class_id IS NULL
+                               AND phs.token_type_id IS NULL
                                AND phs.deleted_at IS NULL
          LEFT JOIN custodian_endpoints phe
                                ON (phe.group_id = phs.custodian_group_id
@@ -957,14 +957,14 @@ export class ListingsClient {
                                AND mph.identifier = 'photos' AND mph.deleted_at IS NULL
          LEFT JOIN metadata mev ON mev.entity_type = 'token' AND mev.entity_id = t.id
                                AND mev.identifier = 'expires_at' AND mev.deleted_at IS NULL
-        WHERE t.token_class_id = $class_id
+        WHERE t.token_type_id = $type_id
           AND t.current_state_id = $active
           AND t.deleted_at IS NULL
           AND (mev.value_datetime IS NULL OR mev.value_datetime > $now)
           ${where.length > 0 ? `AND ${where.join(' AND ')}` : ''}
         ORDER BY t.created_at DESC, t.id DESC
         LIMIT $take`,
-      { ...params, ...(await this.classAndState()), $now: Math.floor(Date.now() / 1000) }
+      { ...params, ...(await this.typeAndState()), $now: Math.floor(Date.now() / 1000) }
     );
 
     return rows.map((row) => this.toSummary(row));
@@ -982,12 +982,12 @@ export class ListingsClient {
       `SELECT t.id, t.name, t.created_at, s.name AS state,
               ex.value_datetime AS expires_at
          FROM tokens t
-         JOIN token_class_states s ON s.id = t.current_state_id
+         JOIN token_type_states s ON s.id = t.current_state_id
          JOIN person_keys k        ON k.person_id = t.issuer_person_id
          /* The seller paid for the term, so this is the page that most needs it. */
          LEFT JOIN metadata ex ON ex.entity_type = 'token' AND ex.entity_id = t.id
                               AND ex.identifier = 'expires_at' AND ex.deleted_at IS NULL
-        WHERE t.token_class_id = $class_id
+        WHERE t.token_type_id = $type_id
           AND k.address = $address
           AND k.confirmed_at IS NOT NULL
           AND k.revoked_at IS NULL
@@ -995,7 +995,7 @@ export class ListingsClient {
         ORDER BY t.created_at DESC, t.id DESC
         LIMIT $take`,
       {
-        $class_id: (await this.classAndState()).$class_id,
+        $type_id: (await this.typeAndState()).$type_id,
         $address: this.client.address,
         $take: clampLimit(options.limit),
       }
@@ -1042,14 +1042,18 @@ export class ListingsClient {
    * than guessed at.
    */
   async fees(): Promise<FeeTier[]> {
-    const { $class_id } = await this.classAndState();
+    const { $type_id } = await this.typeAndState();
     const rows = await this.client.query<{ identifier: unknown; value_number: unknown }>(
+      // `'token_class'` IS A DATA VALUE, NOT AN IDENTIFIER. The table/column
+      // rename (branch#69) is `ALTER TABLE ... RENAME` and does not touch rows
+      // already written, nor the `metadata_entity_vocab` CHECK that admits this
+      // string. It stays spelled the old way until branch says otherwise.
       `SELECT identifier, value_number
          FROM metadata
         WHERE entity_type = 'token_class'
-          AND entity_id = $class_id
+          AND entity_id = $type_id
           AND deleted_at IS NULL`,
-      { $class_id }
+      { $type_id }
     );
 
     const tiers: FeeTier[] = [];
@@ -1072,19 +1076,19 @@ export class ListingsClient {
    *
    * `live_slug`, NOT `slug`, and the difference is a UNIQUE index. `slug` is not
    * unique -- a type deleted and recreated leaves its old row behind with the
-   * same slug, and `token_classes_live_slug_derived` nulls `live_slug` on the
+   * same slug, and `token_types_live_slug_derived` nulls `live_slug` on the
    * dead one. Matching on `slug` therefore returns whichever row the planner
    * hands back first, which on a chain where a directory has been rebuilt is
    * not reliably the live one. Migration 40 made this the convention and 46
    * moved `browse_listings` onto it; this is the last read that had not caught
    * up, and #74's rebuild is exactly the scenario that makes it matter.
    */
-  private async classAndState(): Promise<{ $class_id: number; $active: number }> {
-    if (this.cachedClass) return this.cachedClass;
-    const rows = await this.client.query<{ class_id: unknown; state_id: unknown }>(
-      `SELECT c.id AS class_id, s.id AS state_id
-         FROM token_classes c
-         JOIN token_class_states s ON s.token_class_id = c.id AND s.name = $active_name
+  private async typeAndState(): Promise<{ $type_id: number; $active: number }> {
+    if (this.cachedType) return this.cachedType;
+    const rows = await this.client.query<{ type_id: unknown; state_id: unknown }>(
+      `SELECT c.id AS type_id, s.id AS state_id
+         FROM token_types c
+         JOIN token_type_states s ON s.token_type_id = c.id AND s.name = $active_name
         WHERE c.live_slug = $slug AND c.deleted_at IS NULL
         LIMIT 1`,
       { $slug: LISTING_TYPE_SLUG, $active_name: ACTIVE_STATE }
@@ -1093,14 +1097,14 @@ export class ListingsClient {
     if (!row) {
       throw new BranchError(`the ${LISTING_TYPE_SLUG} type is not configured on this chain`);
     }
-    this.cachedClass = {
-      $class_id: asQueryInt(toUnits(row.class_id, 'class_id')),
+    this.cachedType = {
+      $type_id: asQueryInt(toUnits(row.type_id, 'type_id')),
       $active: asQueryInt(toUnits(row.state_id, 'state_id')),
     };
-    return this.cachedClass;
+    return this.cachedType;
   }
 
-  private cachedClass: { $class_id: number; $active: number } | undefined;
+  private cachedType: { $type_id: number; $active: number } | undefined;
 }
 
 /**
