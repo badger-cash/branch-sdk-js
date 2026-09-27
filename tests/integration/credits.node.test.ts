@@ -237,7 +237,7 @@ describe('credits client', () => {
   /**
    * A LEFT JOIN, not a JOIN, and an entry with no reference proves it.
    *
-   * `create_listing` opens its settlement with a null reference -- no money
+   * A listing mint opens its settlement with a null reference -- no money
    * moved outside the ledger, so there is nothing to reference. An inner join
    * would still return the row, but a spend whose settlement were ever missing
    * would vanish from a statement that is meant to be total.

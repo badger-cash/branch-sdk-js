@@ -232,7 +232,7 @@ describe('listings client', () => {
     const page = await user.listings.browse({ limit: 200 });
     expect(page.map((l) => l.listingId)).not.toContain(id);
 
-    // get_listing is a record lookup, not a shop window: someone following a
+    // `get` is a record lookup, not a shop window: someone following a
     // link to a listing that ended should be told it ended, not that it never
     // existed.
     await expect(user.listings.get(id)).resolves.toMatchObject({ state: 'sold' });
@@ -268,7 +268,7 @@ describe('listings client', () => {
  *
  * Six of them were declared for months with no way to write them, so the
  * failure this guards is not a wrong value but a missing row -- which the write
- * side cannot see, because create_listing succeeded either way.
+ * side cannot see, because the mint succeeds either way.
  *
  * And the detail query now carries twenty LEFT JOINs. Whether kwil's planner
  * accepts that is not something a stub can be asked.

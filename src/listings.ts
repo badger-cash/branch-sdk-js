@@ -1,5 +1,5 @@
 import { toAmount, toUnits } from './amount.js';
-import { numeric } from './client.js';
+import { boolArray, intArray, numeric, numericArray, textArray } from './client.js';
 import { BranchError } from './errors.js';
 import { objectUrl } from './custodians.js';
 
@@ -9,7 +9,31 @@ import type { BranchClient } from './client.js';
 /** `value_number` is NUMERIC(38,10); prices and mileage carry that scale. */
 export const LISTING_SCALE = 10;
 
-/** How a listing ended. Mirrors what `close_listing` accepts. */
+/**
+ * The automobile directory, by the slug its type carries on chain.
+ *
+ * A NAME RATHER THAN A CONSTANT IN A QUERY, because #74 makes the type a thing
+ * created by transaction: a second directory is a second slug and nothing else.
+ * This package still speaks about exactly one of them -- its projections name
+ * `make`, `model` and `vin` -- so the slug is fixed here rather than taken as
+ * an argument, and a generic directory client is a separate piece of work.
+ */
+export const LISTING_TYPE_SLUG = 'automobile-listing';
+
+/**
+ * The state a new advertisement starts in, and the one a takedown moves it to.
+ *
+ * NAMED RATHER THAN INFERRED, now that the chain will no longer infer them.
+ * `mint_token` would resolve the lowest-ordinal non-terminal state if handed a
+ * null, and `moderate_token` requires a terminal state by name -- both are the
+ * generic actions refusing to guess at a type's vocabulary. These two names are
+ * what migration 90 gave the automobile class and what the retired actions
+ * used; every read path in this file already assumes 'active'.
+ */
+const ACTIVE_STATE = 'active';
+const MODERATED_STATE = 'withdrawn';
+
+/** How a listing ended. Both are terminal states on the automobile type. */
 export type ListingOutcome = 'sold' | 'withdrawn';
 
 /** A listing as it appears in a browse or search result. */
@@ -135,8 +159,9 @@ export interface BrowseOptions {
 export interface SearchOptions extends BrowseOptions {
   /*
     THE TEXT FACETS. All eight are matched case-insensitively and folded to
-    lower on the way in, because `create_listing` folds on write and the filter
-    has to compare against what was stored.
+    lower on the way in, because the chain folds on write -- `metadata_schemas
+    .folded` is set for all eight (migration 91) and `mint_token` honours it --
+    and the filter has to compare against what was stored.
 
     They cost ONE join between them, however many are supplied — a single pass
     over `metadata` keeping the listings that matched every requested
@@ -188,7 +213,7 @@ export interface SearchOptions extends BrowseOptions {
  * repricing is configuration, adding a price point is a product decision.
  */
 export interface FeeTier {
-  /** Days the listing stays active. `create_listing` takes this. */
+  /** Days the listing stays active. `mint_token` takes this as `$duration_days`. */
   readonly durationDays: number;
   /**
    * The charge, in whole credits, as `listing_fee` computes it.
@@ -309,6 +334,44 @@ interface OwnRow {
 }
 
 /**
+ * One of `mint_token`'s six key/value pairs, built so the two stay the same
+ * length.
+ *
+ * THE PAIRING IS THE HAZARD, and it is silent. `unnest(keys, values)` zips to
+ * the LONGER array and pads the shorter with NULLs, so a mismatch does not
+ * fail: it writes a real value against a null identifier, or a null against a
+ * real one, and lands as a constraint violation much later naming a column
+ * rather than the mistake. The action checks all six lengths for exactly that
+ * reason, and this makes the check unreachable by construction rather than
+ * relying on two array literals being edited together.
+ *
+ * An absent value appends nothing to EITHER array, which is how a field the
+ * seller said nothing about writes no row at all.
+ */
+class FieldPairs {
+  readonly keys: string[] = [];
+  readonly values: string[] = [];
+
+  put(identifier: string, value: string | null | undefined): void {
+    if (value === null || value === undefined || value === '') return;
+    this.keys.push(identifier);
+    this.values.push(value);
+  }
+}
+
+/** The same, for the boolean pair, where `false` is an answer and must land. */
+class BoolPairs {
+  readonly keys: string[] = [];
+  readonly values: boolean[] = [];
+
+  put(identifier: string, value: boolean | undefined): void {
+    if (value === undefined) return;
+    this.keys.push(identifier);
+    this.values.push(value);
+  }
+}
+
+/**
  * Publishing, closing, and every read path a buyer uses.
  *
  * Writes go through actions, which is where the fee, the VIN guard and the
@@ -321,55 +384,165 @@ export class ListingsClient {
   /**
    * Publish a listing and pay the fee for its duration.
    *
-   * `make`, `model` and `vin` are folded to lower case by the action on write,
-   * so searches stay bare equalities on `metadata_lookup_idx`. The display
-   * spelling is not lost -- `tokens.name` keeps the seller's own wording.
+   * `mint_token`, NOT `create_listing`. badger-cash/branch#74 retired the seven
+   * automobile-shaped actions: a directory is now a token type created by
+   * transaction, and the generic mint writes whatever that type's
+   * `metadata_schemas` declare. Nothing in the binary knows what a car is any
+   * more, so every named parameter became a declared field arriving in one of
+   * six typed key/value array pairs.
+   *
+   * WHAT THE SDK HAD TO TAKE OVER, because the action no longer does it:
+   *
+   *   * `tokens.name`. `create_listing` composed `year || ' ' || make || ' ' ||
+   *     model` in straight-line code. `mint_token` is handed the name, because
+   *     it cannot know that this type's display line is built from three of its
+   *     fields. Composed here rather than in the front end -- one caller
+   *     spelling it differently is a directory with two title conventions in it.
+   *   * The type. `create_listing` resolved the automobile class itself;
+   *     `mint_token` takes one. `classAndState` resolves it by `live_slug`.
+   *
+   * WHAT THE CHAIN STILL OWNS, and must not be duplicated here:
+   *
+   *   * Folding. DO NOT FOLD HERE, and the temptation is real, because the
+   *     rule moved rather than disappeared. `create_listing` called `lower()`
+   *     by hand; `mint_token` reads `metadata_schemas.folded` and writes
+   *     `CASE WHEN d.folded THEN lower(t.v) ELSE t.v END`
+   *     (41-explicit-mint-policy.sql:1245), and migration 91 set that column on
+   *     `make`, `model`, `price_currency`, `vin` and the six descriptors --
+   *     exactly the fields `create_listing` folded, and only those, so
+   *     `location` and `description` keep their capitals as they always did.
+   *     Folding a tenth field here would store a value the declaration does not
+   *     describe, which is the same defect badger-cash/branch#2 was, arriving
+   *     from the client instead. Values go out as the seller typed them.
+   *   * `tokens.name`, therefore, is composed from the UNFOLDED input, below.
+   *     It is the display line and must keep the seller's own capitalisation --
+   *     which is also what the publish form previews before submitting.
+   *   * `expires_at`, computed from `$duration_days` -- and REFUSED if supplied,
+   *     so two clients cannot disagree about what thirty days means.
+   *   * The VIN rule, now `unique_scope = 'type_active'` on the declaration
+   *     (migration 93) rather than a hand-written query in the action.
+   *   * The fee and its settlement. The type's `mint_policy` is `fee`, so a term
+   *     is mandatory and there is no free path (migration 41).
+   *
+   * A FIELD IS OMITTED RATHER THAN SENT EMPTY. Under `create_listing` an empty
+   * string and a null both wrote no row; here a key that is present writes one,
+   * so `''` would record an empty answer where the seller gave none. A required
+   * field left empty is refused by the chain by name, which is a better error
+   * than any this could raise.
    */
   async create(input: CreateListingInput): Promise<string> {
+    const { $class_id } = await this.classAndState();
+
+    const text = new FieldPairs();
+    text.put('make', input.make);
+    text.put('model', input.model);
+    text.put('price_currency', input.priceCurrency);
+    text.put('location', input.location);
+    text.put('vin', input.vin);
+    text.put('description', input.description);
+    text.put('body_style', input.bodyStyle);
+    text.put('transmission', input.transmission);
+    text.put('fuel_type', input.fuelType);
+    text.put('exterior_color', input.exteriorColor);
+    text.put('condition', input.condition);
+    text.put('title_status', input.titleStatus);
+
+    const numbers = new FieldPairs();
+    numbers.put('price', decimalString(input.price, 'price'));
+    numbers.put('year', decimalString(input.year, 'year'));
+    numbers.put('mileage', decimalString(input.mileage, 'mileage'));
+
+    // An unanswered question writes no row and an explicit `false` writes one
+    // saying so, which here is the difference between sending the key and not
+    // sending it. Collapsing the two would tell a buyer somebody refused them
+    // when nobody was asked.
+    const booleans = new BoolPairs();
+    booleans.put('accepts_offers', input.acceptsOffers);
+    booleans.put('accepts_trade', input.acceptsTrade);
+
     return await this.client.write(
-      'create_listing',
+      'mint_token',
       {
-        $make: input.make,
-        $model: input.model,
-        $year: input.year,
-        $price: decimalString(input.price, 'price'),
-        $price_currency: input.priceCurrency,
+        $type_id: $class_id,
+        $state_name: ACTIVE_STATE,
+        $name: `${String(input.year)} ${input.make} ${input.model}`,
+        // The seller holds their own advertisement: the mint resolves their
+        // holder from @caller when this is null.
+        $to_holder_id: null,
+        // No agency signs an ad into existence. The type's `issuer_kind` is
+        // 'person', and a group here would be refused.
+        $as_group_id: null,
+        // The mint opens the settlement the fee is paid inside, which is
+        // invariant 15 -- the payment and the thing it paid for share one
+        // envelope. Handing it an existing one is for a caller batching several
+        // mints, which this is not.
+        $settlement_id: null,
         $duration_days: input.durationDays,
-        $location: input.location,
-        $contact_hmac_hex: input.contactHmacHex,
-        $vin: input.vin,
-        $mileage: decimalString(input.mileage, 'mileage'),
-        $description: input.description,
-        $photos_json: JSON.stringify(input.photos ?? []),
-        /*
-          NULL, NOT EMPTY STRING, for anything the seller left alone. The action
-          treats '' and NULL alike and writes neither, but sending null is what
-          says so at the boundary rather than relying on that -- and `?? null`
-          rather than a truthiness check, so a deliberate empty string is not
-          silently turned into something else on the way past.
-        */
-        $body_style: input.bodyStyle ?? null,
-        $transmission: input.transmission ?? null,
-        $fuel_type: input.fuelType ?? null,
-        $exterior_color: input.exteriorColor ?? null,
-        $condition: input.condition ?? null,
-        $title_status: input.titleStatus ?? null,
-        // `?? null` and not `?? false`: an unanswered question writes no row,
-        // and an explicit false writes one saying so.
-        $accepts_offers: input.acceptsOffers ?? null,
-        $accepts_trade: input.acceptsTrade ?? null,
+        // BOTH NULL FOR A NON-FUNGIBLE, and the action refuses either being
+        // set. An advertisement is one thing, not a quantity of them.
+        $symbol: null,
+        $quantity: null,
+        $note: 'listing published',
+        $text_keys: text.keys,
+        $text_values: text.values,
+        $number_keys: numbers.keys,
+        $number_values: numbers.values,
+        $boolean_keys: booleans.keys,
+        $boolean_values: booleans.values,
+        // EMPTY, AND IT HAS TO BE. `expires_at` is the only datetime this type
+        // declares, and supplying it alongside a paid term is refused.
+        $datetime_keys: [],
+        $datetime_values: [],
+        // `photos` is declared `json` and holds the object keys as one array,
+        // because an identifier cannot repeat on one entity.
+        $json_keys: ['photos'],
+        $json_values: [JSON.stringify(input.photos ?? [])],
+        // THE COMMITMENT, NEVER THE VALUE. `contact` is declared
+        // `requires_custodian`, so the chain stores an HMAC and a custodian's
+        // name. Every validator holds every row permanently and reads are
+        // unauthenticated, so the details stay off-chain by construction.
+        $brokered_keys: ['contact'],
+        $brokered_hmacs: [input.contactHmacHex],
       },
-      // Nothing infers to NUMERIC: a string infers text and a number int8, and
-      // the action refuses both. Both numeric parameters have to be declared.
-      { $price: numeric(38, 10), $mileage: numeric(38, 10) }
+      {
+        // Nothing infers to NUMERIC, and an empty array infers to `null[]`.
+        // client.ts's note on `textArray` says why all twelve are declared
+        // rather than only the ones that obviously cannot infer.
+        $quantity: numeric(78, 0),
+        $text_keys: textArray,
+        $text_values: textArray,
+        $number_keys: textArray,
+        $number_values: numericArray(38, 10),
+        $boolean_keys: textArray,
+        $boolean_values: boolArray,
+        $datetime_keys: textArray,
+        $datetime_values: intArray,
+        $json_keys: textArray,
+        $json_values: textArray,
+        $brokered_keys: textArray,
+        $brokered_hmacs: textArray,
+      }
     );
   }
 
-  /** End a listing. `sold` and `withdrawn` are the only outcomes. */
+  /**
+   * End a listing. `sold` and `withdrawn` are the only outcomes.
+   *
+   * `close_token`, which reads the target state out of the TYPE'S OWN
+   * vocabulary rather than from a hardcoded pair. `close_listing` validated
+   * `'sold' | 'withdrawn'` itself; the generic action instead requires the named
+   * state to exist on this type and to be terminal -- which is the same two
+   * values here, because those are the terminal states migration 90 gave the
+   * automobile class, and is what stops this becoming a "move my record
+   * anywhere" verb on a type with more of them.
+   *
+   * Authority is unchanged and is ownership, not an office: the person whose
+   * `issuer_person_id` is on the token, and nobody else.
+   */
   async close(listingId: bigint | number, outcome: ListingOutcome): Promise<string> {
-    return await this.client.write('close_listing', {
+    return await this.client.write('close_token', {
       $token_id: asActionInt(listingId),
-      $outcome: outcome,
+      $state_name: outcome,
     });
   }
 
@@ -385,13 +558,25 @@ export class ListingsClient {
    * The reason is mandatory and the action refuses an empty one -- a takedown
    * nobody has to justify is a takedown nobody can review.
    *
-   * Authority is the chain's. `require_office` refuses a caller who does not
-   * hold `listing-moderator`, and the refusal arrives as an ActionFailedError
-   * whatever a client believed when it offered the button.
+   * Authority is the chain's, and is now read from the TYPE rather than from a
+   * hardcoded class: `moderate_token` looks up `token_classes.burning_role_id`
+   * for whatever type the record belongs to and calls `require_office` against
+   * it. For the automobile type that is the same `listing-moderator` office
+   * `moderate_listing` required, so nothing changes for this caller -- and the
+   * refusal still arrives as an ActionFailedError whatever a client believed
+   * when it offered the button.
+   *
+   * THE TAKEDOWN STATE IS 'withdrawn', which is what `moderate_listing` moved a
+   * listing to. It is not an argument here, because there is exactly one
+   * terminal state on this type that means "taken down" and offering a choice
+   * would let a moderator file a takedown as 'sold'. The event's kind is
+   * `moderated` and carries the acting role, so the two are distinguishable
+   * afterwards despite sharing a state.
    */
   async moderate(listingId: bigint | number, reason: string): Promise<string> {
-    return await this.client.write('moderate_listing', {
+    return await this.client.write('moderate_token', {
       $token_id: asActionInt(listingId),
+      $state_name: MODERATED_STATE,
       $reason: reason,
     });
   }
@@ -400,19 +585,26 @@ export class ListingsClient {
    * Set what a listing of a given duration costs.
    *
    * A DIFFERENT OFFICE FROM MODERATION, and the separation is deliberate on the
-   * chain: `set_listing_fee` requires `admin`, while `moderate_listing`
-   * requires `listing-moderator`. Taking an advertisement down and changing
-   * what advertisements cost are not the same authority, so a UI that treats
-   * "holds an office" as one thing will offer this to somebody the node
-   * refuses.
+   * chain: `set_type_fee` requires the governing organization's admin office,
+   * while `moderate_token` requires the type's `burning_role_id`. Taking an
+   * advertisement down and changing what advertisements cost are not the same
+   * authority, so a UI that treats "holds an office" as one thing will offer
+   * this to somebody the node refuses.
+   *
+   * `set_type_fee` TAKES THE TYPE, where `set_listing_fee` resolved the
+   * automobile class for itself. Resolved here through `classAndState`, so the
+   * signature is unchanged: a caller repricing this directory should not have
+   * to know its id.
    *
    * The fee is NUMERIC(38,10) and is declared: nothing infers to NUMERIC, so a
    * string would infer text and a number int8, and the action refuses both.
    */
   async setFee(durationDays: bigint | number, fee: string | number): Promise<string> {
+    const { $class_id } = await this.classAndState();
     return await this.client.write(
-      'set_listing_fee',
+      'set_type_fee',
       {
+        $type_id: $class_id,
         $duration_days: asActionInt(durationDays),
         $fee: decimalString(fee, 'fee'),
       },
@@ -423,17 +615,35 @@ export class ListingsClient {
   /**
    * One advertisement, in full. Null when nothing has that id.
    *
-   * A PLAIN SELECT RATHER THAN get_listing, and the difference is who can call
-   * it. `get_listing` is a view action, view actions are signed, and a signed
-   * read means nobody could open a listing without an account -- the same
-   * funnel problem `connectReadOnly` exists to avoid, one page further in.
+   * A PLAIN SELECT, AND NOT FOR THE REASON THIS COMMENT USED TO GIVE.
    *
-   * It costs nothing to avoid: `get_listing` has no `@caller` in it. It is a
-   * pivot over public tables, and Decision 2b leaves SELECT granted, so the
-   * pivot can happen here. The projection below is that action's, join for
-   * join, including `contact_via` -- which is the custodian's NAME and never
-   * the commitment, because publishing the HMAC "would invite clients to treat
-   * it as an identifier for the person".
+   * It said `get_listing` was a view action, that view actions are signed, and
+   * that routing detail through one would mean nobody could open a listing
+   * without an account. THAT IS FALSE, and badger-cash/branch#66 established
+   * why: a PUBLIC VIEW action that reads no `@caller` needs no signer at all.
+   * kwil-db's `core/types/message.go:83` only requires a signature when the
+   * message carries a sender, and `test/e2e/generic-reads.sh` calls all three
+   * generic reads unsigned against a running node. The belief cost nothing here
+   * because the SELECT works, but it is the kind of thing that gets copied.
+   *
+   * `get_listing` is gone regardless -- migration 45 retired it with the rest of
+   * the automobile read views -- so the standing question is whether this should
+   * become `get_token`. DECIDED: NO, NOT YET. `get_token` returns a type's
+   * fields generically, which means this method would have to pivot rows into
+   * `Listing` here and would lose the two joins that make the projection worth
+   * having: `contact_via`, the custodian's NAME rather than the commitment, and
+   * `photo_base`, the custodian endpoint that turns an opaque object key into a
+   * URL the browser can fetch. Both come back with the row today rather than
+   * costing a second round trip. The same holds for `search_tokens`, which
+   * migration 46 notes has no numeric range facet, no expiry filter and no card
+   * projection -- which is why `browse_listings` was deliberately kept on chain
+   * rather than retired with the rest. Moving the read path is its own piece of
+   * work, and it belongs with whatever makes the generic reads cover the front
+   * page.
+   *
+   * The DDL these SELECTs read is untouched by #74: 23, 24 and 90 are applied
+   * and immutable, and only the action layer was retired. Decision 2b leaves
+   * SELECT granted, so the pivot happens here.
    */
   async get(listingId: bigint | number): Promise<Listing | null> {
     const rows = await this.client.query<DetailRow>(
@@ -596,7 +806,7 @@ export class ListingsClient {
 
       The twentieth facet now costs what the second does.
 
-      Values are folded rather than `lower()`ed in SQL: `create_listing` folds
+      Values are folded rather than `lower()`ed in SQL: the declaration folds
       on write, so a bare equality stays on `metadata_lookup_idx`, and
       `lower(value_text)` here would scan every row because kwil has no
       expression indexes.
@@ -857,19 +1067,31 @@ export class ListingsClient {
     return tiers;
   }
 
-  /** Resolve the automobile class and its active state, once per call. */
+  /**
+   * Resolve the automobile type and its active state, once per client.
+   *
+   * `live_slug`, NOT `slug`, and the difference is a UNIQUE index. `slug` is not
+   * unique -- a type deleted and recreated leaves its old row behind with the
+   * same slug, and `token_classes_live_slug_derived` nulls `live_slug` on the
+   * dead one. Matching on `slug` therefore returns whichever row the planner
+   * hands back first, which on a chain where a directory has been rebuilt is
+   * not reliably the live one. Migration 40 made this the convention and 46
+   * moved `browse_listings` onto it; this is the last read that had not caught
+   * up, and #74's rebuild is exactly the scenario that makes it matter.
+   */
   private async classAndState(): Promise<{ $class_id: number; $active: number }> {
     if (this.cachedClass) return this.cachedClass;
     const rows = await this.client.query<{ class_id: unknown; state_id: unknown }>(
       `SELECT c.id AS class_id, s.id AS state_id
          FROM token_classes c
-         JOIN token_class_states s ON s.token_class_id = c.id AND s.name = 'active'
-        WHERE c.slug = 'automobile-listing' AND c.deleted_at IS NULL
-        LIMIT 1`
+         JOIN token_class_states s ON s.token_class_id = c.id AND s.name = $active_name
+        WHERE c.live_slug = $slug AND c.deleted_at IS NULL
+        LIMIT 1`,
+      { $slug: LISTING_TYPE_SLUG, $active_name: ACTIVE_STATE }
     );
     const row = rows[0];
     if (!row) {
-      throw new BranchError('the automobile-listing class is not configured on this chain');
+      throw new BranchError(`the ${LISTING_TYPE_SLUG} type is not configured on this chain`);
     }
     this.cachedClass = {
       $class_id: asQueryInt(toUnits(row.class_id, 'class_id')),
