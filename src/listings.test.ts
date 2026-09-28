@@ -18,8 +18,8 @@ interface Query {
   params: Record<string, unknown>;
 }
 
-/** Rows the class/state lookup needs before any other query runs. */
-const CLASS_ROW = [{ class_id: 1, state_id: 2 }];
+/** Rows the type/state lookup needs before any other query runs. */
+const TYPE_ROW = [{ type_id: 1, state_id: 2 }];
 
 async function connect(
   rows: Record<string, unknown>[] = [],
@@ -46,10 +46,10 @@ async function connect(
       params?: Record<string, unknown>
     ): Promise<{ data?: T[] }> {
       queries.push({ sql: query, params: params ?? {} });
-      if (query.includes('token_classes')) return Promise.resolve({ data: CLASS_ROW as T[] });
+      if (query.includes('token_types')) return Promise.resolve({ data: TYPE_ROW as T[] });
       // `get` is a plain SELECT, recognised here by the join no other read
       // makes.
-      if (query.includes('token_class_states st')) {
+      if (query.includes('token_type_states st')) {
         return Promise.resolve({ data: (detail ? [detail] : []) as T[] });
       }
       return Promise.resolve({ data: rows as T[] });
@@ -374,7 +374,7 @@ describe('mine', () => {
     const { client, queries } = await connect();
     await client.listings.mine();
 
-    // Not `token_class_states` -- the class lookup mentions that too.
+    // Not `token_type_states` -- the type lookup mentions that too.
     const mine = queries.find((q) => q.sql.includes('person_keys'));
     expect(mine?.params.$address).toBe(LOWER);
     // Not filtered to active: a seller needs to see what they withdrew or sold.
@@ -525,7 +525,7 @@ describe('fees', () => {
     expect((await client.listings.fees())[0]?.durationDays).toBe(7);
   });
 
-  it('ignores class metadata that is not a rate', async () => {
+  it('ignores type metadata that is not a rate', async () => {
     const { client } = await connect([
       rate('fee_30d', '1.0000000000'),
       // A wildcard LIKE would have taken this one: `_` matches any character.
