@@ -1056,7 +1056,31 @@ export class ListingsClient {
 
     const ids = found.map((hit) => toUnits(hit.token_id, 'token_id'));
     const fields = await this.fieldsFor(ids);
-    const base = await this.photoBase();
+
+    /*
+      TWO ROUND TRIPS, NOT FOUR, and the two removed were doing nothing.
+
+      This used to await `photoBase()` here, which resolves the photo custodian
+      through `metadata_field_custodian_endpoint` -- and that first awaits
+      `liveTypeId()`, another call. So a cold grid cost four sequential requests:
+      search_tokens, token_fields, current_type_version, then the endpoint.
+
+      `token_fields` ALREADY CARRIES `custodian_url` PER ROW, resolved from the
+      declaration that governs each record's own type. The fallback was written for
+      `get_token`, which returns the custodian's ids but not its resolved address;
+      it was never needed here and `summaryRowFrom` prefers the row's own value
+      anyway.
+
+      WHY IT MATTERED MORE THAN IT LOOKS. Measured against staging, `SELECT 1`
+      costs the same as a real query -- 0.455s against 0.470s -- so the work is
+      free and the ROUND TRIP is the entire cost. Four of them is about 1.9s before
+      anything paints, where the SELECT this replaced took two. That is the whole
+      of the slowdown, and it is latency rather than the chain being slower.
+
+      A listing with no `photos` row has no url and no photographs to render, so
+      there is nothing for a fallback to rescue.
+    */
+    const base: string | null = null;
 
     /*
       EXPIRED RECORDS ARE FILTERED HERE, and that is a real difference from the
