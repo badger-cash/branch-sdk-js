@@ -208,9 +208,35 @@ await client.write('issue_credits',
 ```
 
 `selectQuery` has no equivalent — it cannot declare parameter types at all —
-so an `INT8` bound into a plain SELECT has to cross as a number. The client
-checks it against `Number.MAX_SAFE_INTEGER` and throws rather than binding a
-value that would match the wrong row.
+so an `INT8` bound into a plain SELECT has to cross as a number. There is no such
+bind left in this package (`badger-cash/branch#119` moved every read onto an
+action), but the limit is worth knowing before anybody adds one back.
+
+#### A NUMERIC ARRAY OF ALL NULLS CANNOT BE SENT AT ALL
+
+Declaring the type fixes the inference and then runs into a second wall. kwil
+resolves an array's precision from its **values**, so an array whose elements are
+all NULL arrives as `numeric(0,0)[]` and is refused against a declared
+`numeric(38,10)[]`:
+
+```
+type error: action "search_tokens" expected argument 10 to be of type
+numeric(38,10)[], but got numeric(0,0)[]
+```
+
+**That is the common case, not an edge one.** A range filter with a floor and no
+ceiling — `year >= 2015`, the commonest thing a front page sends — produces exactly
+that array for the ceiling side. Verified against a running node, both ways: the
+undeclared array is refused for being `int8[]`, and the declared all-NULL array is
+refused for being `numeric(0,0)[]`.
+
+**So an action taking numeric bounds should take them as `TEXT[]` and cast
+inside.** Text infers as text, a NULL element stays NULL, and the precision is
+stated in the action rather than guessed from a value. `search_tokens` does this,
+and its `$number_mins`/`$number_maxs` are decimal strings for that reason and no
+other. A malformed bound then fails a cast rather than a type check, which is a
+better message anyway — and this package validates the digits before sending, so a
+caller who mistypes a price hears it from here rather than from the planner.
 
 ### Sending an array parameter, and the empty one
 

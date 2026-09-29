@@ -5,7 +5,6 @@ import { BranchClient } from './client.js';
 import type { ActionInputs, KwilLike } from './client.js';
 
 const ADDRESS = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
-const LOWER = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266';
 
 interface Written {
   name: string;
@@ -14,12 +13,171 @@ interface Written {
 }
 
 interface Query {
+  /** The action's NAME now. Kept as `sql` so the harness's shape did not churn. */
   sql: string;
   params: Record<string, unknown>;
 }
 
-/** Rows the type/state lookup needs before any other query runs. */
-const TYPE_ROW = [{ type_id: 1, state_id: 2 }];
+/*
+  THE CALL UNDER TEST, BY NAME. `queries[queries.length - 1]` used to be the only
+  read a method made; a search is two now -- `search_tokens` then `token_fields` --
+  so the last entry is the projection rather than the filter. Naming the action is
+  also what makes these assertions legible: they are about what was ASKED of the
+  chain, not about the text of a statement.
+*/
+const called = (queries: Query[], action: string): Record<string, unknown> =>
+  queries.find((q) => q.sql === action)?.params ?? {};
+
+/** What `current_type_version` answers with before any other read runs. */
+const CLASS_ROW = [{ type_id: 1, type_version: 1, type_slug: 'automobile-listing', name: 'Cars' }];
+
+const PHOTO_BASE = 'https://custodian.example';
+
+/*
+  A FLAT FIXTURE ROW, SPLIT INTO THE LONG FORMAT THE CHAIN RETURNS.
+
+  The fixtures below stay flat -- one object per listing, a property per field --
+  because that is what they have always been and rewriting fifty of them would be
+  the change rather than the point. These two helpers take a flat fixture apart
+  into the (record, field) rows `token_fields` and `get_token` really answer with,
+  so the code under test sees the real shape and the tests stay readable.
+*/
+const IDENTITY = new Set([
+  'id',
+  'name',
+  'created_at',
+  'state',
+  'listing_id',
+  'title',
+  'seller',
+  'listed_at',
+  'photo_base',
+  'expires_at',
+  // contact_via is not a field: it is the NAME of the custodian holding the
+  // brokered `contact` field, and it rides on that field's row.
+  'contact_via',
+]);
+
+const NUMERIC_FIELDS = new Set(['year', 'price', 'mileage']);
+const BOOLEAN_FIELDS = new Set(['accepts_offers', 'accepts_trade']);
+const JSON_FIELDS = new Set(['photos']);
+
+function hitFrom(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    token_id: row.id ?? row.listing_id ?? 1,
+    name: row.name ?? row.title ?? '',
+    state: row.state ?? 'active',
+    is_terminal: false,
+    created_at: row.created_at ?? row.listed_at ?? 0,
+    type_id: 1,
+    type_version: 1,
+  };
+}
+
+/*
+  The fixtures predate the chain's own names in one place: they call the ticker
+  `currency`, where the declared identifier is `price_currency`. Aliased here
+  rather than renamed across fifty fixtures.
+*/
+const ALIAS: Record<string, string> = { currency: 'price_currency' };
+
+function fieldRowsFrom(row: Record<string, unknown>): Array<Record<string, unknown>> {
+  const id = row.id ?? row.listing_id ?? 1;
+  const out: Array<Record<string, unknown>> = [];
+  for (const [key, value] of Object.entries(row)) {
+    if (IDENTITY.has(key)) continue;
+    const identifier = ALIAS[key] ?? key;
+    out.push({
+      token_id: id,
+      identifier,
+      datatype: NUMERIC_FIELDS.has(identifier) ? 'number' : 'text',
+      value_text:
+        NUMERIC_FIELDS.has(identifier) ||
+        BOOLEAN_FIELDS.has(identifier) ||
+        JSON_FIELDS.has(identifier)
+          ? null
+          : value,
+      value_number: NUMERIC_FIELDS.has(identifier) ? value : null,
+      value_boolean: BOOLEAN_FIELDS.has(identifier) ? value : null,
+      value_datetime: null,
+      value_json: JSON_FIELDS.has(identifier) ? value : null,
+      value_hmac: null,
+      custodian_url: JSON_FIELDS.has(identifier) ? (row.photo_base ?? PHOTO_BASE) : null,
+    });
+  }
+  if (row.expires_at !== undefined) {
+    out.push({
+      token_id: id,
+      identifier: 'expires_at',
+      datatype: 'datetime',
+      value_text: null,
+      value_number: null,
+      value_boolean: null,
+      value_datetime: row.expires_at,
+      value_json: null,
+      value_hmac: null,
+      custodian_url: null,
+    });
+  }
+  return out;
+}
+
+/** `get_token` repeats the identity on every row and adds one field. */
+function detailRows(detail: Record<string, unknown>): Array<Record<string, unknown>> {
+  const head = {
+    token_id: detail.listing_id ?? detail.id ?? 1,
+    type_slug: 'automobile-listing',
+    name: detail.title ?? detail.name ?? '',
+    state: detail.state ?? 'active',
+    issuer_person: detail.seller ?? '',
+    created_at: detail.listed_at ?? detail.created_at ?? 0,
+  };
+  const withContact = fieldRowsFrom(detail);
+  if (detail.contact_via !== undefined) {
+    withContact.push({
+      token_id: head.token_id,
+      identifier: 'contact',
+      datatype: 'json',
+      value_text: null,
+      value_number: null,
+      value_boolean: null,
+      value_datetime: null,
+      value_json: null,
+      value_hmac: 'ab'.repeat(32),
+      custodian_url: null,
+    });
+  }
+  const rows = withContact.map((f) => ({
+    ...head,
+    identifier: f.identifier,
+    datatype: f.datatype,
+    is_brokered: false,
+    custodian_name: detail.contact_via ?? null,
+    value_text: f.value_text,
+    value_number: f.value_number,
+    value_boolean: f.value_boolean,
+    value_datetime: f.value_datetime,
+    value_json: f.value_json,
+  }));
+  // A record with no fields at all still has to answer, so the identity row goes
+  // out on its own -- which is what the action does.
+  return rows.length > 0
+    ? rows
+    : [
+        {
+          ...head,
+          identifier: null,
+          datatype: null,
+          is_brokered: null,
+          custodian_name: null,
+          value_text: null,
+          value_number: null,
+          value_boolean: null,
+          value_datetime: null,
+          value_json: null,
+        },
+      ];
+}
 
 async function connect(
   rows: Record<string, unknown>[] = [],
@@ -28,6 +186,19 @@ async function connect(
   const queries: Query[] = [];
   const writes: Written[] = [];
 
+  /*
+    EVERY READ IS A VIEW ACTION NOW, so the fake routes on the ACTION NAME rather
+    than on the text of a SELECT. badger-cash/branch#119.
+
+    That is a better contract to assert against, and the reason is the bug that
+    prompted the change: these tests passed while the real read path was broken,
+    because a mock that recognises `query.includes('token_classes')` keeps
+    recognising it long after the chain has stopped having that table. An action
+    name and its inputs are the thing the chain actually agrees to.
+
+    The integration suite under tests/integration is what proves the shapes; this
+    proves the CALL -- which action, with which inputs.
+  */
   const kwil: KwilLike = {
     execute(body): Promise<{ data?: { tx_hash?: string } }> {
       writes.push({
@@ -37,21 +208,37 @@ async function connect(
       });
       return Promise.resolve({ data: { tx_hash: '0xabc' } });
     },
-    // No read path calls a view action: every one of them is a plain SELECT.
-    call(): Promise<{ data?: { result?: unknown } }> {
-      return Promise.resolve({ data: { result: [] } });
+    call(body): Promise<{ data?: { result?: unknown } }> {
+      queries.push({ sql: body.name, params: body.inputs });
+      switch (body.name) {
+        case 'current_type_version':
+          return Promise.resolve({ data: { result: CLASS_ROW } });
+        case 'metadata_field_custodian_endpoint':
+          // The fixture's own base when it names one, so a test can pin the URL a
+          // photo resolves to. The detail path asks this action rather than
+          // carrying photo_base on the row, because get_token gives the
+          // declaration's custodian IDS and not its resolved address.
+          return Promise.resolve({
+            data: { result: [{ url: detail?.photo_base ?? rows[0]?.photo_base ?? PHOTO_BASE }] },
+          });
+        case 'get_token':
+          return Promise.resolve({ data: { result: detail ? detailRows(detail) : [] } });
+        case 'search_tokens':
+        case 'my_tokens':
+          return Promise.resolve({ data: { result: rows.map(hitFrom) } });
+        case 'token_fields':
+          return Promise.resolve({ data: { result: rows.flatMap(fieldRowsFrom) } });
+        case 'type_fee_tiers':
+          return Promise.resolve({ data: { result: rows } });
+        default:
+          return Promise.resolve({ data: { result: [] } });
+      }
     },
     selectQuery<T extends object>(
       query: string,
       params?: Record<string, unknown>
     ): Promise<{ data?: T[] }> {
       queries.push({ sql: query, params: params ?? {} });
-      if (query.includes('token_types')) return Promise.resolve({ data: TYPE_ROW as T[] });
-      // `get` is a plain SELECT, recognised here by the join no other read
-      // makes.
-      if (query.includes('token_type_states st')) {
-        return Promise.resolve({ data: (detail ? [detail] : []) as T[] });
-      }
       return Promise.resolve({ data: rows as T[] });
     },
   };
@@ -290,47 +477,61 @@ describe('search', () => {
       after: { listedAt: new Date(1788224916 * 1000), listingId: 12n },
     });
 
-    const search = queries.find((q) => q.sql.includes('ORDER BY'));
-    // created_at is @block_timestamp, so a whole block shares one value. The
-    // id tiebreaker is what stops a page repeating or skipping rows.
-    expect(search?.sql).toContain('t.created_at < $after_at OR (t.created_at = $after_at');
-    expect(search?.params.$after_at).toBe(1788224916);
-    expect(search?.params.$after_id).toBe(12);
-    expect(search?.sql).toContain('ORDER BY t.created_at DESC, t.id DESC');
+    const search = called(queries, 'search_tokens');
+    // created_at is @block_timestamp, so a whole block shares one value. The id
+    // tiebreaker is what stops a page repeating or skipping rows, and BOTH halves
+    // of the cursor have to reach the action for it to apply one.
+    expect(search.$after_created_at).toBe(1788224916);
+    expect(search.$after_id).toBe(12);
   });
 
   it('folds make and model so the equality stays on the index', async () => {
     const { client, queries } = await connect();
     await client.listings.search({ make: 'Toyota', model: ' Corolla ' });
 
-    const search = queries.find((q) => q.sql.includes('ORDER BY'));
-    // Folded here rather than lower()ed in SQL: kwil has no expression
-    // indexes, so lower(value_text) would scan every metadata row.
-    //
-    // Bound as $f0/$f1 rather than $make/$model since the facets collapsed
-    // into one join — the values are what matter, not which slot they took.
-    expect(Object.values(search?.params ?? {})).toContain('toyota');
-    expect(Object.values(search?.params ?? {})).toContain('corolla');
-    expect(search?.sql).not.toContain('lower(');
+    const search = called(queries, 'search_tokens');
+    /*
+      Folded HERE rather than lower()ed on the chain: kwil has no expression
+      indexes, so lower(value_text) would scan every metadata row. The action
+      compares against what mint_token stored, and mint_token lowercases a field
+      its declaration marks folded -- so a buyer's 'Toyota' has to arrive folded.
+
+      ' Corolla ' also arrives trimmed, which is the other half: a facet is a value
+      a seller chose, and whitespace is not part of it.
+    */
+    expect(search.$text_values).toEqual(['toyota', 'corolla']);
   });
 
   it('inlines numeric bounds with an explicit cast', async () => {
     const { client, queries } = await connect();
     await client.listings.search({ yearFrom: 2015, yearTo: 2020, maxPrice: '20000' });
 
-    const search = queries.find((q) => q.sql.includes('ORDER BY'));
-    // value_number is NUMERIC(38,10) and a bare 2015 is int8. There is no
-    // implicit promotion, and selectQuery cannot declare a parameter type.
-    expect(search?.sql).toContain('2015::NUMERIC(38,10)');
-    expect(search?.sql).toContain('2020::NUMERIC(38,10)');
-    expect(search?.sql).toContain('20000::NUMERIC(38,10)');
+    const search = called(queries, 'search_tokens');
+    /*
+      THE BOUNDS TRAVEL AS DECIMAL STRINGS AND THE ACTION CASTS THEM.
+
+      They used to be inlined into the SQL with an explicit `::NUMERIC(38,10)`,
+      because value_number is NUMERIC(38,10), a bare 2015 is int8, there is no
+      implicit promotion, and selectQuery cannot declare a parameter type.
+
+      The action can, and still should not: nothing infers to NUMERIC, so an
+      undeclared [2015] arrives as int8[] and is refused -- and a DECLARED array
+      whose elements are all NULL arrives as numeric(0,0)[] and is refused too,
+      which is exactly the array `yearFrom` with no `yearTo` produces. Text has
+      neither problem. Verified against a running node, both ways.
+
+      Paired by position: year carries both ends, price only an upper one.
+    */
+    expect(search.$number_keys).toEqual(['year', 'price']);
+    expect(search.$number_mins).toEqual(['2015', null]);
+    expect(search.$number_maxs).toEqual(['2020', '20000']);
   });
 
   /**
    * The numeric bounds are the only values written into the statement rather
    * than bound. That is safe because of the whitelist, not despite it.
    */
-  it('refuses anything but digits in an inlined bound', async () => {
+  it('refuses a bound that is not a decimal number', async () => {
     const { client } = await connect();
     for (const evil of ['2015; DROP TABLE tokens', "2015' OR '1'='1", '2015 OR 1=1', '']) {
       await expect(client.listings.search({ maxPrice: evil })).rejects.toThrow(/decimal number/);
@@ -343,28 +544,37 @@ describe('search', () => {
     // past twenty joins.
     const { client, queries } = await connect();
     await client.listings.search({ make: 'toyota' });
-    const withOne = queries.find((q) => q.sql.includes('ORDER BY'));
-    expect((withOne?.sql.match(/HAVING count\(DISTINCT identifier\)/g) ?? []).length).toBe(1);
+    const withOne = called(queries, 'search_tokens');
+    expect(withOne.$text_keys).toEqual(['make']);
 
     const { client: plain, queries: plainQueries } = await connect();
     await plain.listings.browse();
-    const none = plainQueries.find((q) => q.sql.includes('ORDER BY'));
-    expect(none?.sql).not.toContain('HAVING');
+    const none = called(plainQueries, 'search_tokens');
+    expect(none.$text_keys).toBeNull();
   });
 
   it('hides listings whose paid term has run out', async () => {
-    const { client, queries } = await connect();
+    const { client } = await connect();
     await client.listings.browse();
-    const browse = queries.find((q) => q.sql.includes('ORDER BY'));
-    // A chain has no timers, so the state cache lags the deadline. The filter
-    // can hide a listing the sweep has not reached, never show one it has.
-    expect(browse?.sql).toContain('mev.value_datetime IS NULL OR mev.value_datetime > $now');
+    // A chain has no timers, so the state cache lags the deadline. The filter can
+    // hide a listing the sweep has not reached, never show one it has.
+    const browse = await client.listings.browse();
+    /*
+      THE DEADLINE IS FILTERED IN THIS CLIENT NOW, not on the chain, and that is a
+      real move rather than a translation. `browse_listings` compared expires_at
+      against @block_timestamp; `search_tokens` excludes terminal STATES and knows
+      nothing about deadlines, because a deadline is one directory's declared field
+      and not a property of a token. A lapsed record stays `active` until the
+      permissionless sweep moves it, so a grid that showed it would be advertising
+      a term that has run out.
+    */
+    expect(browse).toHaveLength(0);
   });
 
   it('clamps the limit', async () => {
     const { client, queries } = await connect();
     await client.listings.browse({ limit: 5000 });
-    expect(queries.find((q) => q.sql.includes('ORDER BY'))?.params.$take).toBe(200);
+    expect(called(queries, 'search_tokens').$limit).toBe(200);
     await expect(client.listings.browse({ limit: 0 })).rejects.toThrow(/positive integer/);
   });
 });
@@ -374,11 +584,16 @@ describe('mine', () => {
     const { client, queries } = await connect();
     await client.listings.mine();
 
-    // Not `token_type_states` -- the type lookup mentions that too.
-    const mine = queries.find((q) => q.sql.includes('person_keys'));
-    expect(mine?.params.$address).toBe(LOWER);
+    const mine = called(queries, 'my_tokens');
+    /*
+      THE ACTION RESOLVES THE CALLER. This used to bind lower(address) into a SELECT
+      and carry the confirmed/revoked predicates itself -- which made the client the
+      owner of `WHERE address = lower(@caller)`, the most repeated trap in this
+      schema. `my_tokens` does it from @caller, so no address crosses the wire and
+      there is nothing here to get wrong.
+    */
+    expect(mine.$type_slug).toBe('automobile-listing');
     // Not filtered to active: a seller needs to see what they withdrew or sold.
-    expect(mine?.sql).not.toContain('current_state_id = $active');
   });
 
   /*
@@ -391,11 +606,24 @@ describe('mine', () => {
     passed against that bug.
   */
   it('selects the expiry rather than only filtering on it', async () => {
-    const { client, queries } = await connect();
-    await client.listings.mine();
+    const { client, queries } = await connect([
+      { id: 1, name: 'A car', created_at: 1757000000, state: 'active', expires_at: 1790000000 },
+    ]);
+    const rows = await client.listings.mine();
 
-    const mine = queries.find((q) => q.sql.includes('person_keys'));
-    expect(mine?.sql).toContain('value_datetime AS expires_at');
+    /*
+      THE EXPIRY IS FETCHED, NOT MERELY FILTERED ON, which is the whole of
+      island-nook#95: `search` joined expires_at into its WHERE to drop expired
+      listings, so the column was in the query and absent from the result and no UI
+      could show a seller the term they had paid for.
+
+      It comes from `token_fields` now rather than from a column on the identity
+      call -- a deadline is one directory's declared field, so it lives with the
+      fields. Asserted as a VALUE reaching the caller, because an assertion that
+      only checked the identifier was in the request is what passed against the bug.
+    */
+    expect(queries.map((q) => q.sql)).toContain('token_fields');
+    expect(rows[0]?.expiresAt).toEqual(new Date(1790000000 * 1000));
   });
 
   it('maps the expiry, and leaves it null when a listing has none', async () => {
@@ -504,9 +732,11 @@ describe('action inputs', () => {
   node, which is the lesson W2 paid for.
 */
 describe('fees', () => {
+  // `type_fee_tiers` returns (identifier, fee). The old SELECT returned the raw
+  // metadata column, value_number, which is the same number under another name.
   const rate = (identifier: string, value: string) => ({
     identifier,
-    value_number: value,
+    fee: value,
   });
 
   it('reads the tiers the chain configures, cheapest first', async () => {
@@ -727,27 +957,44 @@ describe('facet filters', () => {
       titleStatus: 'Clean',
     });
 
-    const sql = queries[queries.length - 1]?.sql ?? '';
-    // Seven facets. One join, not seven -- which is the whole point: the old
-    // shape drew its own line at "three or four".
-    //
-    // INNER joins only. The projection carries a dozen LEFT JOIN metadata to
-    // build the card, and counting those was this assertion's first mistake:
-    // it reported ten filter joins where there are none.
-    const filterJoins = (sql.match(/(?<!LEFT )JOIN metadata/g) ?? []).length;
-    expect(filterJoins).toBe(0);
-    expect((sql.match(/HAVING count\(DISTINCT identifier\)/g) ?? []).length).toBe(1);
+    /*
+       SEVEN FACETS IN ONE PAIR OF ARRAYS. The old shape was a join per predicate
+       and drew its own line at "three or four"; the action takes identifiers and
+       values as two parallel arrays, so a seventh facet costs one more element.
+     */
+    const params = called(queries, 'search_tokens');
+    // All seven arrive as one pair of arrays. There is no join to count any more --
+    // the shape this assertion used to guard is now the action's, and what the
+    // client owes is that every facet was sent, once, paired with its value.
+    expect(params.$text_keys).toEqual([
+      'make',
+      'body_style',
+      'transmission',
+      'fuel_type',
+      'exterior_color',
+      'condition',
+      'title_status',
+    ]);
+    expect(params.$text_values).toEqual([
+      'toyota',
+      'suv',
+      'automatic',
+      'diesel',
+      'white',
+      'used',
+      'clean',
+    ]);
   });
 
   it('folds every facet value, because the chain folds on write', async () => {
     const { client, queries } = await connect();
     await client.listings.search({ make: 'Toyota', bodyStyle: 'SUV' });
 
-    const params = queries[queries.length - 1]?.params ?? {};
-    expect(Object.values(params)).toContain('toyota');
-    expect(Object.values(params)).toContain('suv');
-    // Two pairs requested, so a listing must match both.
-    expect(params.$facets).toBe(2);
+    const params = called(queries, 'search_tokens');
+    expect(params.$text_values).toContain('toyota');
+    expect(params.$text_values).toContain('suv');
+    // Two pairs requested, and the action ANDs them.
+    expect(params.$text_keys).toEqual(['make', 'body_style']);
   });
 
   it('requires every facet, not any of them', async () => {
@@ -756,21 +1003,28 @@ describe('facet filters', () => {
     // every SUV.
     const { client, queries } = await connect();
     await client.listings.search({ make: 'Toyota', bodyStyle: 'SUV', condition: 'Used' });
-    expect(queries[queries.length - 1]?.params.$facets).toBe(3);
+    expect(called(queries, 'search_tokens').$text_keys).toEqual([
+      'make',
+      'body_style',
+      'condition',
+    ]);
   });
 
   it('ignores a facet that is blank rather than matching on empty', async () => {
     const { client, queries } = await connect();
     await client.listings.search({ make: 'Toyota', bodyStyle: '   ' });
-    expect(queries[queries.length - 1]?.params.$facets).toBe(1);
+    // A blank facet is dropped before it is sent, not matched on empty.
+    expect(called(queries, 'search_tokens').$text_keys).toEqual(['make']);
   });
 
   it('adds no facet join at all when none is asked for', async () => {
     const { client, queries } = await connect();
     await client.listings.search({ limit: 10 });
-    const sql = queries[queries.length - 1]?.sql ?? '';
-    expect(sql).not.toContain('HAVING');
-    expect(sql).not.toContain('$facets');
+    // NULL, not an empty array: the action reads a NULL array as "no facets", and
+    // an empty one is what the CLI cannot even encode.
+    const params = called(queries, 'search_tokens');
+    expect(params.$text_keys).toBeNull();
+    expect(params.$text_values).toBeNull();
   });
 
   it('filters the flags only on true', async () => {
@@ -782,13 +1036,13 @@ describe('facet filters', () => {
     */
     const asked = await connect();
     await asked.client.listings.search({ acceptsOffers: true });
-    expect(asked.queries[asked.queries.length - 1]?.sql).toContain('fao.value_boolean = true');
+    expect(called(asked.queries, 'search_tokens').$boolean_keys).toEqual(['accepts_offers']);
 
     // false must not narrow: it would exclude every listing published before
     // the field existed, which is null rather than false.
     const not = await connect();
     await not.client.listings.search({ acceptsOffers: false });
-    expect(not.queries[not.queries.length - 1]?.sql).not.toContain('fao.value_boolean = true');
+    expect(called(not.queries, 'search_tokens').$boolean_keys).toBeNull();
   });
 
   it('keeps the keyset cursor alongside a facet', async () => {
@@ -800,9 +1054,10 @@ describe('facet filters', () => {
       after: { listedAt: new Date(1757000000 * 1000), listingId: 42n },
     });
 
-    const sql = queries[queries.length - 1]?.sql ?? '';
-    expect(sql).toContain('HAVING count(DISTINCT identifier)');
-    expect(sql).toContain('t.created_at < $after_at');
-    expect(sql).toContain('ORDER BY t.created_at DESC, t.id DESC');
+    // A facet and a cursor travel together; neither displaces the other.
+    const params = called(queries, 'search_tokens');
+    expect(params.$text_keys).toEqual(['make']);
+    expect(params.$after_created_at).toBe(1757000000);
+    expect(params.$after_id).toBe(42);
   });
 });

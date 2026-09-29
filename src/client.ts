@@ -92,7 +92,7 @@ export interface KwilLike {
   // Note the asymmetry: execute takes an array of parameter sets, call takes
   // a single one. It is kwil's API, not a transcription error.
   call(
-    body: { namespace: string; name: string; inputs: ActionInputs },
+    body: { namespace: string; name: string; inputs: ActionInputs; types?: ActionTypes },
     signer?: KwilSigner
   ): Promise<{ data?: { result?: unknown } }>;
   // Read paths are plain SELECTs: decision 2b leaves SELECT granted, so browse
@@ -285,6 +285,42 @@ export class BranchClient {
   async query<T extends object>(sql: string, params: Record<string, unknown> = {}): Promise<T[]> {
     const res = await this.kwil.selectQuery<T>(sql, params);
     return res.data ?? [];
+  }
+
+  /**
+   * Call a view action WITHOUT a signer.
+   *
+   * badger-cash/branch#119. The browse and search surface must answer a visitor
+   * who has never connected a wallet, so the actions behind it -- `search_tokens`,
+   * `token_fields`, `get_token`, `type_fee_tiers`, `token_type_schema` -- do not
+   * touch `@caller` and, as 24-tokens.sql puts it, MAY NEVER START. The moment one
+   * does, it becomes a signed call and the front page asks a stranger to approve a
+   * signature to look at cars.
+   *
+   * WHY THIS EXISTS AT ALL, rather than the raw SELECTs it replaces. Decision 2b
+   * leaves SELECT granted, so the old read path was plain SQL and needed no server
+   * side. That worked until the schema moved underneath it: #69 renamed the
+   * registry and #118 made field declarations type-scoped, and both emptied the
+   * grid with an error INSIDE an HTTP 200. A table name is not an interface; an
+   * action is.
+   */
+  async readPublic<T>(
+    action: string,
+    inputs: ActionInputs = {},
+    types?: ActionTypes
+  ): Promise<T[]> {
+    // Spread rather than `types: types`, because exactOptionalPropertyTypes is on:
+    // an explicit `undefined` is not the same as an absent property, and passing
+    // one would be a type error at the call rather than a missing declaration at
+    // the node.
+    const res = await this.kwil.call({
+      namespace: NAMESPACE,
+      name: action,
+      inputs,
+      ...(types === undefined ? {} : { types }),
+    });
+    const result = res.data?.result;
+    return Array.isArray(result) ? (result as T[]) : [];
   }
 
   /** Call a view action. Signed, because most of them read `@caller`. */

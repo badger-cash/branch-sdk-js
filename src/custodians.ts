@@ -40,10 +40,11 @@ const toEndpoint = (row: EndpointRow | undefined): CustodianEndpoint | null => {
  * time by whatever it decides from the request -- headers, authentication, a
  * signed challenge. Nothing here should grow a notion of capability.
  *
- * UNSIGNED, DELIBERATELY. These are plain SELECTs rather than view actions,
- * because a signed-out browser has to render listings and their photographs.
- * `client.read` would demand a signer; `client.query` does not. Nothing here
- * resolves `@caller`, so there is nothing a signature would prove.
+ * UNSIGNED, DELIBERATELY, because a signed-out browser has to render listings and
+ * their photographs. These were plain SELECTs for that reason; badger-cash/branch#119
+ * moved them onto view actions that do not read `@caller`, which `client.readPublic`
+ * calls without a signer. `client.read` would demand one, and nothing here resolves
+ * `@caller`, so there is nothing a signature would prove.
  */
 export class CustodiansClient {
   constructor(private readonly client: BranchClient) {}
@@ -60,40 +61,47 @@ export class CustodiansClient {
    * never announced or has withdrawn. All three mean "you cannot reach this",
    * and a caller has a field name to report either way.
    */
-  async forField(entityType: string, identifier: string): Promise<CustodianEndpoint | null> {
-    const rows = await this.client.query<EndpointRow>(
-      `SELECT e.url, e.updated_at
-         FROM metadata_schemas s
-         JOIN custodian_endpoints e
-           ON (e.group_id = s.custodian_group_id OR e.person_id = s.custodian_person_id)
-        WHERE s.entity_type = $entity_type
-          AND s.identifier = $identifier
-          AND s.token_type_id IS NULL
-          AND s.deleted_at IS NULL
-          AND e.deleted_at IS NULL
-        LIMIT 1`,
-      { $entity_type: entityType, $identifier: identifier }
-    );
+  async forField(
+    entityType: string,
+    identifier: string,
+    typeId?: bigint | number
+  ): Promise<CustodianEndpoint | null> {
+    /*
+      THROUGH THE ACTION, AND WITH A TYPE. badger-cash/branch#119.
+
+      This was a plain SELECT matching `token_class_id IS NULL` -- shared fields
+      only, which is what both 'photos' and 'contact' were. branch#118 made every
+      token field the TYPE'S OWN, so that predicate stopped matching and this
+      returned null. A null custodian is not an error anywhere: `photo_base` is
+      null, every object key maps to null and is filtered out, and every listing
+      renders zero photographs with nothing reported.
+
+      `metadata_field_custodian_endpoint` now takes the type and prefers the type's
+      own declaration, falling back to a network-wide one -- so a 'token_class'
+      field like a fee tier, which cannot be type-scoped at all, still resolves
+      with the type omitted.
+    */
+    const rows = await this.client.readPublic<EndpointRow>('metadata_field_custodian_endpoint', {
+      $type_id: typeId === undefined ? null : Number(typeId),
+      $entity_type: entityType,
+      $identifier: identifier,
+    });
     return toEndpoint(rows[0]);
   }
 
   /** Where a group custodian answers, by group id. */
   async forGroup(groupId: bigint | number): Promise<CustodianEndpoint | null> {
-    const rows = await this.client.query<EndpointRow>(
-      `SELECT url, updated_at FROM custodian_endpoints
-        WHERE group_id = $group_id AND deleted_at IS NULL LIMIT 1`,
-      { $group_id: Number(groupId) }
-    );
+    const rows = await this.client.readPublic<EndpointRow>('group_custodian_endpoint', {
+      $group_id: Number(groupId),
+    });
     return toEndpoint(rows[0]);
   }
 
   /** Where a person custodian answers, by person id. */
   async forPerson(personId: bigint | number): Promise<CustodianEndpoint | null> {
-    const rows = await this.client.query<EndpointRow>(
-      `SELECT url, updated_at FROM custodian_endpoints
-        WHERE person_id = $person_id AND deleted_at IS NULL LIMIT 1`,
-      { $person_id: Number(personId) }
-    );
+    const rows = await this.client.readPublic<EndpointRow>('person_custodian_endpoint', {
+      $person_id: Number(personId),
+    });
     return toEndpoint(rows[0]);
   }
 
