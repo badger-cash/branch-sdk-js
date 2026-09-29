@@ -57,16 +57,16 @@ interface BalanceRow {
   decimals: unknown;
 }
 
-interface EntryRow {
-  id: unknown;
+/** One row of `my_credit_history`. The token ledger's shape, not the currency's. */
+interface HistoryRow {
+  entry_id: unknown;
   kind: unknown;
-  amount: unknown;
+  direction: unknown;
+  quantity: unknown;
   memo: unknown;
   created_at: unknown;
-  from_holder_id: unknown;
-  to_holder_id: unknown;
-  settlement_reference: unknown;
-  settlement_note: unknown;
+  reference: unknown;
+  note: unknown;
 }
 
 /**
@@ -110,69 +110,46 @@ export class CreditsClient {
    * ever do not, the entries are what happened.
    */
   async history(options: HistoryOptions = {}): Promise<CreditEntry[]> {
-    const me = await this.client.identity.whoami();
-    if (!me) {
-      throw new BranchError('no person is registered for this key');
-    }
+    /*
+      THE TOKEN LEDGER, NOT THE CURRENCY LEDGER, and that is a correction rather
+      than a refactor. badger-cash/branch#119.
 
-    const limit = options.limit ?? 50;
-    const rows = await this.client.query<EntryRow>(
-      `SELECT e.id, e.kind, e.amount, e.memo, e.created_at,
-              e.from_holder_id, e.to_holder_id,
-              s.reference AS settlement_reference,
-              s.note      AS settlement_note
-         FROM currency_entries e
-         JOIN currencies c ON c.id = e.currency_id
-         LEFT JOIN settlements s ON s.id = e.settlement_id
-        WHERE c.code = 'credits'
-          AND (e.to_holder_id = $holder OR e.from_holder_id = $holder)
-        ORDER BY e.created_at DESC, e.id DESC
-        LIMIT $take`,
-      { $holder: asQueryInt(me.holderId, 'holderId'), $take: limit }
-    );
+      This queried `currency_entries` for `c.code = 'credits'`. That was right when
+      credits were a currency; branch#89 made them a fungible TOKEN, so every
+      issuance and every listing fee is a `token_transfers` row. A seller who had
+      bought and spent credits saw a statement missing all of it -- no error, just
+      absence, which is the worst shape a money screen can fail in.
 
-    // decimals is a property of the currency, so one read serves every row.
+      `my_credit_history` resolves the caller and their wallet itself, signs the
+      direction from the caller's own side, and resolves the credit token from the
+      `credit_token_family` network setting rather than the literal 'credits'.
+    */
+    const rows = await this.client.read<HistoryRow>('my_credit_history', {
+      $limit: options.limit ?? 50,
+    });
+
+    // decimals is a property of the token, so one read serves every row.
     const { decimals } = await this.balance();
 
-    return rows.map((row) => {
-      const toHolder = row.to_holder_id === null ? null : toUnits(row.to_holder_id, 'to_holder_id');
-      return {
-        id: toUnits(row.id, 'id'),
-        kind: toKind(row.kind),
-        amount: { units: toUnits(row.amount, 'amount'), decimals },
-        direction: toHolder !== null && toHolder === me.holderId ? 'credit' : 'debit',
-        memo: typeof row.memo === 'string' ? row.memo : null,
-        reference: typeof row.settlement_reference === 'string' ? row.settlement_reference : null,
-        settlementNote: typeof row.settlement_note === 'string' ? row.settlement_note : null,
-        occurredAt: new Date(Number(toUnits(row.created_at, 'created_at')) * 1000),
-      };
-    });
+    return rows.map((row) => ({
+      id: toUnits(row.entry_id, 'entry_id'),
+      kind: toKind(row.kind),
+      amount: { units: toUnits(row.quantity, 'quantity'), decimals },
+      /*
+        THE ACTION SIGNS IT, not this. It used to be derived here by comparing
+        to_holder_id against the caller's own wallet id -- which is the comparison
+        a client gets wrong when a wallet appears on both sides of a row, and the
+        reason a statement ever shows a debit as a credit. `my_credit_history`
+        returns 'in' or 'out' relative to the caller, computed where the caller is
+        already known.
+      */
+      direction: row.direction === 'in' ? ('credit' as const) : ('debit' as const),
+      memo: typeof row.memo === 'string' ? row.memo : null,
+      reference: typeof row.reference === 'string' ? row.reference : null,
+      settlementNote: typeof row.note === 'string' ? row.note : null,
+      occurredAt: new Date(Number(toUnits(row.created_at, 'created_at')) * 1000),
+    }));
   }
-}
-
-/**
- * An INT8 bound into a plain SELECT, as a number, checked first.
- *
- * `selectQuery` has no way to declare a parameter's type -- unlike `execute`,
- * which takes a `types` map -- so kwil infers it from the JavaScript value and
- * every alternative is worse. A bigint is refused outright ("Unsupported type:
- * bigint"). A string infers as `text`, and the planner will not compare that
- * to an int8 column ("operator does not exist: bigint = text"); writing
- * `$holder::int8` in the SQL does not help, because the cast is lost before
- * Postgres sees the statement.
- *
- * That leaves a number, which is fine for every id a counter will realistically
- * allocate and wrong past 2^53. So it is checked rather than assumed: an id
- * that large throws here instead of quietly matching the wrong row.
- */
-function asQueryInt(value: bigint, field: string): number {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < -BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new BranchError(
-      `${field} is ${value.toString()}, which is past Number.MAX_SAFE_INTEGER and cannot be ` +
-        'bound into a plain SELECT without losing precision'
-    );
-  }
-  return Number(value);
 }
 
 function toKind(value: unknown): CreditEntryKind {

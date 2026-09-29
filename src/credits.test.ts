@@ -34,6 +34,18 @@ async function connect(fixture: Fixture): Promise<{ client: BranchClient; querie
         const me = fixture.whoami;
         return Promise.resolve({ data: { result: me === null ? [] : [me] } });
       }
+      /*
+        THE STATEMENT IS AN ACTION NOW, AND AGAINST THE TOKEN LEDGER.
+        badger-cash/branch#119: `history` read `currency_entries` directly, which
+        stopped being where credits move when #89 made them a fungible token.
+        `my_credit_history` resolves the caller, signs the direction from the
+        caller's own side, and finds the credit token through the
+        `credit_token_family` network setting.
+      */
+      if (body.name === 'my_credit_history') {
+        queries.push({ sql: body.name, params: body.inputs });
+        return Promise.resolve({ data: { result: fixture.entries ?? [] } });
+      }
       return Promise.resolve({ data: { result: [] } });
     },
     selectQuery<T extends object>(
@@ -84,14 +96,20 @@ describe('balance', () => {
 });
 
 describe('history', () => {
+  /*
+    THE TOKEN LEDGER'S SHAPE, not the currency ledger's. `my_credit_history`
+    returns entry_id/quantity/direction/reference/note, and signs the direction
+    itself -- so a fixture no longer carries holder ids for the client to compare.
+  */
   const entry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-    id: 11,
+    entry_id: 11,
     kind: 'mint',
-    amount: '100',
+    direction: 'in',
+    quantity: '100',
     memo: 'purchase',
     created_at: 1788224916,
-    from_holder_id: null,
-    to_holder_id: 7,
+    reference: null,
+    note: null,
     ...over,
   });
 
@@ -104,12 +122,15 @@ describe('history', () => {
 
     await client.credits.history();
 
+    /*
+      THE ACTION SCOPES IT, not this client. It used to bind $holder into a SELECT,
+      which meant the client resolved the caller's wallet and carried the
+      address-normalisation rule. `my_credit_history` does both, so what is left to
+      assert is that the right action was called with the right limit.
+    */
     expect(queries).toHaveLength(1);
-    expect(queries[0]?.params).toMatchObject({ $holder: 7 });
-    expect(queries[0]?.sql).toContain('currency_entries');
-    // Bound rather than interpolated, and limited by default.
-    expect(queries[0]?.sql).toContain('$holder');
-    expect(queries[0]?.params.$take).toBe(50);
+    expect(queries[0]?.sql).toBe('my_credit_history');
+    expect(queries[0]?.params.$limit).toBe(50);
   });
 
   it('marks direction relative to the caller', async () => {
@@ -117,8 +138,8 @@ describe('history', () => {
       whoami: ME,
       balance: { amount: '100', decimals: 0 },
       entries: [
-        entry({ id: 1, to_holder_id: 7, from_holder_id: null }),
-        entry({ id: 2, kind: 'transfer', to_holder_id: 9, from_holder_id: 7 }),
+        entry({ entry_id: 1, direction: 'in' }),
+        entry({ entry_id: 2, kind: 'transfer', direction: 'out' }),
       ],
     });
 
@@ -147,7 +168,7 @@ describe('history', () => {
       entries: [],
     });
     await client.credits.history({ limit: 5 });
-    expect(queries[0]?.params.$take).toBe(5);
+    expect(queries[0]?.params.$limit).toBe(5);
   });
 
   it('refuses an entry kind the schema could not have produced', async () => {
@@ -159,19 +180,33 @@ describe('history', () => {
     await expect(client.credits.history()).rejects.toThrow(/unrecognised ledger entry kind/);
   });
 
-  it('refuses a holder id too large to bind without losing precision', async () => {
-    // selectQuery cannot declare parameter types, so an INT8 has to go across
-    // as a number. Past 2^53 that would match the wrong row rather than fail.
-    const { client } = await connect({
-      whoami: { ...ME, holder_id: '9007199254740993' },
-      balance: { amount: '0', decimals: 0 },
-    });
-    await expect(client.credits.history()).rejects.toThrow(/MAX_SAFE_INTEGER/);
-  });
+  /*
+    TWO CONCERNS LEFT THIS CLIENT ENTIRELY, and deleting their tests is the honest
+    record of that rather than a gap. badger-cash/branch#119.
 
-  it('says so when the key belongs to nobody', async () => {
-    const { client } = await connect({ whoami: null, balance: { amount: '0', decimals: 0 } });
-    await expect(client.credits.history()).rejects.toThrow(/no person is registered/);
+    A HOLDER ID TOO LARGE TO BIND. `history` used to resolve the caller's wallet
+    and bind it into a SELECT as a number, because selectQuery cannot declare
+    parameter types -- so past 2^53 it would have matched the WRONG ROW rather than
+    failed, and a guard threw instead. `my_credit_history` resolves the wallet on
+    chain from @caller and no id crosses the wire, so there is no longer a
+    precision boundary to guard. The guard and its test are gone, not relaxed.
+
+    AN UNREGISTERED KEY. This pre-flighted `whoami` to get that wallet and raised
+    "no person is registered" itself. The action resolves the caller and refuses by
+    name -- "unknown signer: no active key registered for 0x..." -- so the
+    pre-flight is one round trip that bought a slightly different sentence. The
+    refusal is covered where it now lives: tests/integration/credits.node.test.ts,
+    against a node, which is the only place a signer's registration state is real.
+  */
+  it('asks the chain for the statement without pre-flighting whoami', async () => {
+    const { client, queries } = await connect({
+      whoami: ME,
+      balance: { amount: '100', decimals: 0 },
+      entries: [],
+    });
+    await client.credits.history();
+    // One read, and it is the statement. Not two.
+    expect(queries.map((q) => q.sql)).toEqual(['my_credit_history']);
   });
 });
 
@@ -183,15 +218,14 @@ describe('history', () => {
 */
 describe('statement references', () => {
   const entry = (over: Record<string, unknown>) => ({
-    id: 1,
+    entry_id: 1,
     kind: 'mint',
-    amount: '100',
+    direction: 'in',
+    quantity: '100',
     memo: 'credit purchase',
     created_at: 1757000000,
-    from_holder_id: null,
-    to_holder_id: 7,
-    settlement_reference: null,
-    settlement_note: null,
+    reference: null,
+    note: null,
     ...over,
   });
 
@@ -199,7 +233,7 @@ describe('statement references', () => {
     const { client } = await connect({
       balance: { amount: '100', decimals: 0 },
       whoami: ME,
-      entries: [entry({ settlement_reference: 'CAPTURE-7X9', settlement_note: 'credit issuance' })],
+      entries: [entry({ reference: 'CAPTURE-7X9', note: 'credit issuance' })],
     });
     const [row] = await client.credits.history();
     // The trap: memo is the literal, and reading it for a capture id succeeds
@@ -214,31 +248,42 @@ describe('statement references', () => {
       balance: { amount: '100', decimals: 0 },
       whoami: ME,
       entries: [
+        // 'out', because the action signs the direction from the caller's side.
+        // The client no longer compares holder ids to work it out.
         entry({
           kind: 'transfer',
+          direction: 'out',
           memo: 'listing fee',
-          to_holder_id: 9,
-          from_holder_id: 7,
-          settlement_note: 'listing publication',
+          note: 'paid mint',
         }),
       ],
     });
     const [row] = await client.credits.history();
     expect(row?.reference).toBeNull();
-    expect(row?.settlementNote).toBe('listing publication');
+    expect(row?.settlementNote).toBe('paid mint');
     expect(row?.direction).toBe('debit');
   });
 
-  it('joins settlements so an entry without one still comes back', async () => {
-    // LEFT JOIN, not JOIN: settlement_id is nullable, and an inner join would
-    // silently drop those entries from a statement that is meant to be total.
-    const { client, queries } = await connect({
+  it('returns an entry that has no settlement at all', async () => {
+    /*
+      THE LEFT JOIN MOVED INTO THE ACTION, so what is checked here is the
+      consequence rather than the SQL: an entry with no settlement still comes
+      back, with a null reference. A fee transfer between two on-chain wallets
+      legitimately has none, and an inner join would silently drop those from a
+      statement that is meant to be total.
+
+      That the join really is LEFT is proven against a node in
+      tests/integration/credits.node.test.ts. Asserting the word here only ever
+      checked that the string was still in the file.
+    */
+    const { client } = await connect({
       balance: { amount: '100', decimals: 0 },
       whoami: ME,
       entries: [entry({})],
     });
-    const [row] = await client.credits.history();
-    expect(row?.reference).toBeNull();
-    expect(queries.some((q) => /LEFT JOIN settlements/.test(q.sql))).toBe(true);
+    const rows = await client.credits.history();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.reference).toBeNull();
+    expect(rows[0]?.settlementNote).toBeNull();
   });
 });

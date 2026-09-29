@@ -14,9 +14,17 @@ import { objectUrl } from './custodians.js';
  * a running node separately; these tests cover the calling contract and the
  * pure logic.
  */
+/*
+  UNSIGNED VIEW ACTIONS, NOT SELECTS. badger-cash/branch#119 moved the custodian
+  reads onto `metadata_field_custodian_endpoint`, `group_custodian_endpoint` and
+  `person_custodian_endpoint`, so the fake answers `call` and `selectQuery` is
+  never reached. `call` is still asserted to be UNSIGNED -- the second argument
+  absent -- because that is the property these tests exist for: a signed-out
+  browser has to render photographs.
+*/
 const fakeKwil = (rows: unknown[] = []) => ({
-  selectQuery: vi.fn().mockResolvedValue({ data: rows }),
-  call: vi.fn(),
+  selectQuery: vi.fn(),
+  call: vi.fn().mockResolvedValue({ data: { result: rows } }),
   execute: vi.fn(),
 });
 
@@ -38,8 +46,9 @@ describe('custodians', () => {
     const found = await client.custodians.forListingPhotos();
 
     expect(found).toEqual({ url: 'https://custodian.test', updatedAt: 1789n });
-    expect(kwil.selectQuery).toHaveBeenCalledOnce();
-    expect(kwil.call).not.toHaveBeenCalled();
+    expect(kwil.call).toHaveBeenCalledOnce();
+    // UNSIGNED: one argument, so no signer was passed.
+    expect(kwil.call.mock.calls[0]).toHaveLength(1);
   });
 
   it('asks for the photos field by name', async () => {
@@ -48,8 +57,21 @@ describe('custodians', () => {
 
     await client.custodians.forListingPhotos();
 
-    const call = kwil.selectQuery.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(call[1]).toEqual({ $entity_type: 'token', $identifier: 'photos' });
+    /*
+      THE ACTION AND ITS INPUTS, which is a stronger contract than the SQL text
+      this used to assert. $type_id is null here because `forListingPhotos` names
+      no type -- the action then matches a network-wide declaration only, and a
+      caller that knows its type passes it so the type's own declaration wins.
+    */
+    const call = kwil.call.mock.calls[0] as unknown as [
+      { name: string; inputs: Record<string, unknown> },
+    ];
+    expect(call[0].name).toBe('metadata_field_custodian_endpoint');
+    expect(call[0].inputs).toEqual({
+      $type_id: null,
+      $entity_type: 'token',
+      $identifier: 'photos',
+    });
   });
 
   it('returns null rather than throwing when nobody is reachable', async () => {

@@ -5,11 +5,50 @@ import { BranchError } from './errors.js';
 
 /**
  * A kwil double that records what it was asked and never needs a signer.
- * `selectQuery` is the only method a read-only client may reach.
+ *
+ * BOTH `selectQuery` AND AN UNSIGNED `call` are reachable from a read-only client
+ * now. badger-cash/branch#119 moved the read surface onto view actions that do not
+ * touch `@caller`, so `call` is reached WITHOUT a signer -- which is the property
+ * these tests exist to protect, and the one a signed-out browser depends on.
+ * `execute` remains unreachable, because a write needs an account.
  */
 const fakeKwil = () => ({
   selectQuery: vi.fn().mockResolvedValue({ data: [{ id: '1' }] }),
-  call: vi.fn(),
+  call: vi.fn().mockImplementation((body: { name: string }) => {
+    if (body.name === 'current_type_version') {
+      return Promise.resolve({
+        data: { result: [{ type_id: 1, type_version: 1, type_slug: 'automobile-listing' }] },
+      });
+    }
+    if (body.name === 'metadata_field_custodian_endpoint') {
+      return Promise.resolve({ data: { result: [{ url: 'https://custodian.test' }] } });
+    }
+    if (body.name === 'get_token') {
+      return Promise.resolve({
+        data: {
+          result: [
+            {
+              token_id: 1,
+              name: 'A car',
+              state: 'active',
+              issuer_person: 'someone',
+              created_at: 0,
+              identifier: 'make',
+              datatype: 'text',
+              is_brokered: false,
+              custodian_name: null,
+              value_text: 'toyota',
+              value_number: null,
+              value_boolean: null,
+              value_datetime: null,
+              value_json: null,
+            },
+          ],
+        },
+      });
+    }
+    return Promise.resolve({ data: { result: [] } });
+  }),
   execute: vi.fn(),
 });
 
@@ -41,17 +80,24 @@ describe('connectReadOnly', () => {
   });
 
   it('serves the listings read surface, which is the point', async () => {
-    // search resolves the listing type first, then the rows -- two queries,
-    // both plain SELECTs, neither signed.
+    /*
+      UNSIGNED VIEW ACTIONS, and the assertion inverted with #119. This used to
+      require two plain SELECTs and NO `call` at all; the read surface is actions
+      now, so what matters is that every one of them was called WITHOUT a signer.
+
+      `call` receives one argument when unsigned and two when signed, so the arity
+      is the check -- and it is the check, because a read-only client has no signer
+      to pass and kwil would reject the message rather than the client.
+    */
     const kwil = fakeKwil();
-    kwil.selectQuery
-      .mockResolvedValueOnce({ data: [{ type_id: '1', state_id: '1' }] })
-      .mockResolvedValueOnce({ data: [] });
     const client = await BranchClient.connectReadOnly(options(kwil));
 
     await expect(client.listings.search({ make: 'Toyota' })).resolves.toEqual([]);
-    expect(kwil.selectQuery).toHaveBeenCalledTimes(2);
-    expect(kwil.call).not.toHaveBeenCalled();
+    expect(kwil.call).toHaveBeenCalled();
+    for (const args of kwil.call.mock.calls) {
+      expect(args).toHaveLength(1);
+    }
+    expect(kwil.execute).not.toHaveBeenCalled();
   });
 
   it('opens a listing, which is a page further in than browse', async () => {
@@ -63,27 +109,66 @@ describe('connectReadOnly', () => {
     // the pivot happens in a plain SELECT here, and an anonymous visitor can
     // open a car.
     const kwil = fakeKwil();
-    kwil.selectQuery.mockResolvedValue({
-      data: [
-        {
-          listing_id: 42,
-          title: '2018 Toyota Corolla',
-          state: 'active',
-          seller: 'Ada Lovelace',
-          make: 'toyota',
-          model: 'corolla',
-          year: 2018,
-          price: '12750',
-          currency: 'credits',
-          location: 'Susupe',
-          mileage: 90000,
-          vin: '1hgbh41jxmn109186',
-          description: 'Runs well.',
-          photos: '[]',
-          contact_via: 'CNMI Central',
-          listed_at: 1788224916,
-        },
-      ],
+    /*
+      `get_token`'s LONG FORMAT: the record's identity repeated on every row, plus
+      one declared field. The old fake answered one wide SELECT row with a column
+      per field, which is the shape that stopped existing when the fourteen joins
+      went away.
+    */
+    const head = {
+      token_id: 42,
+      name: '2018 Toyota Corolla',
+      state: 'active',
+      issuer_person: 'Ada Lovelace',
+      created_at: 1788224916,
+      is_brokered: false,
+      custodian_name: null,
+    };
+    const field = (
+      identifier: string,
+      value: unknown,
+      column: 'value_text' | 'value_number' | 'value_json' = 'value_text'
+    ): Record<string, unknown> => ({
+      ...head,
+      identifier,
+      datatype: column === 'value_number' ? 'number' : 'text',
+      value_text: null,
+      value_number: null,
+      value_json: null,
+      value_boolean: null,
+      value_datetime: null,
+      [column]: value,
+    });
+    kwil.call.mockImplementation((body: { name: string }) => {
+      if (body.name === 'get_token') {
+        return Promise.resolve({
+          data: {
+            result: [
+              field('make', 'toyota'),
+              field('model', 'corolla'),
+              field('year', 2018, 'value_number'),
+              field('price', '12750', 'value_number'),
+              field('price_currency', 'credits'),
+              field('location', 'Susupe'),
+              field('mileage', 90000, 'value_number'),
+              field('vin', '1hgbh41jxmn109186'),
+              field('description', 'Runs well.'),
+              field('photos', '[]', 'value_json'),
+              // The custodian's NAME rides on the brokered field's own row.
+              { ...field('contact', null), is_brokered: true, custodian_name: 'CNMI Central' },
+            ],
+          },
+        });
+      }
+      if (body.name === 'metadata_field_custodian_endpoint') {
+        return Promise.resolve({ data: { result: [{ url: 'https://custodian.test' }] } });
+      }
+      if (body.name === 'current_type_version') {
+        return Promise.resolve({
+          data: { result: [{ type_id: 1, type_version: 1, type_slug: 'automobile-listing' }] },
+        });
+      }
+      return Promise.resolve({ data: { result: [] } });
     });
     const client = await BranchClient.connectReadOnly(options(kwil));
 
@@ -92,7 +177,10 @@ describe('connectReadOnly', () => {
     // The custodian's name, never the commitment.
     expect(listing?.contactVia).toBe('CNMI Central');
     expect(listing?.price.units).toBe(127500000000000n);
-    expect(kwil.call).not.toHaveBeenCalled();
+    // Reached WITHOUT a signer, which is what lets an anonymous visitor open a car.
+    for (const args of kwil.call.mock.calls) {
+      expect(args).toHaveLength(1);
+    }
   });
 
   it('refuses view actions, and says why', async () => {

@@ -280,6 +280,152 @@ export interface CreateListingInput {
   acceptsTrade?: boolean;
 }
 
+/**
+ * One row of `token_fields`: a record, a declared field, and that field's value
+ * in whichever column its datatype uses.
+ *
+ * `value_hmac` is hex rather than bytes -- the column is BYTEA and a TEXT return
+ * refuses it, and hex is the form the custodian publishes a commitment in, so a
+ * client recomputing one compares like with like.
+ */
+interface FieldRow {
+  token_id: unknown;
+  identifier: unknown;
+  datatype: unknown;
+  value_text: unknown;
+  value_number: unknown;
+  value_boolean: unknown;
+  value_datetime: unknown;
+  value_json: unknown;
+  value_hmac: unknown;
+  custodian_url: unknown;
+}
+
+/** One row of `search_tokens`: identity only. The fields come separately. */
+interface SearchHit {
+  token_id: unknown;
+  name: unknown;
+  state: unknown;
+  created_at: unknown;
+  type_id: unknown;
+  type_version: unknown;
+}
+
+/** One row of `my_tokens`, which adds the terminal flag a seller's page needs. */
+interface OwnHit {
+  token_id: unknown;
+  name: unknown;
+  state: unknown;
+  is_terminal: unknown;
+  created_at: unknown;
+  type_id: unknown;
+  type_version: unknown;
+}
+
+/** One row of `get_token`: the record's identity repeated, plus one field. */
+interface DetailHit {
+  token_id: unknown;
+  type_slug: unknown;
+  name: unknown;
+  state: unknown;
+  issuer_person: unknown;
+  created_at: unknown;
+  identifier: unknown;
+  datatype: unknown;
+  is_brokered: unknown;
+  custodian_name: unknown;
+  value_text: unknown;
+  value_number: unknown;
+  value_boolean: unknown;
+  value_datetime: unknown;
+  value_json: unknown;
+}
+
+/*
+  THE PIVOTS.
+
+  These exist so the mapping below them did not have to change: `toSummary` and
+  `get`'s object literal still read a flat row with a property per field, and only
+  the way that row is OBTAINED moved from a SELECT with fourteen joins to an action
+  plus a lookup. Keeping the mappers meant the change is in one layer rather than
+  two, and every unit test over them still means what it meant.
+
+  They are also the seam where a generic SDK would cut: everything above is
+  type-agnostic, and the car vocabulary starts exactly here. See
+  badger-cash/branch-sdk-js#46.
+*/
+function summaryRowFrom(
+  hit: SearchHit,
+  fields: Map<string, FieldRow>,
+  photoBase: string | null
+): SummaryRow {
+  const t = (k: string): unknown => fields.get(k)?.value_text ?? null;
+  const n = (k: string): unknown => fields.get(k)?.value_number ?? null;
+  const b = (k: string): unknown => fields.get(k)?.value_boolean ?? null;
+  return {
+    id: hit.token_id,
+    name: hit.name,
+    created_at: hit.created_at,
+    make: t('make'),
+    model: t('model'),
+    year: n('year'),
+    price: n('price'),
+    currency: t('price_currency'),
+    location: t('location'),
+    accepts_offers: b('accepts_offers'),
+    accepts_trade: b('accepts_trade'),
+    photos: fields.get('photos')?.value_json ?? null,
+    // THE FIELD'S OWN URL, not a network-wide one. #118 made the declaration the
+    // type's, so the endpoint travels with the field in `token_fields`; the
+    // cached fallback covers `get_token`, which does not carry it.
+    photo_base: fields.get('photos')?.custodian_url ?? photoBase,
+  };
+}
+
+function detailRowFrom(
+  head: DetailHit,
+  fields: Map<string, DetailHit>,
+  photoBase: string | null
+): DetailRow {
+  const t = (k: string): unknown => fields.get(k)?.value_text ?? null;
+  const n = (k: string): unknown => fields.get(k)?.value_number ?? null;
+  const b = (k: string): unknown => fields.get(k)?.value_boolean ?? null;
+  return {
+    listing_id: head.token_id,
+    title: head.name,
+    state: head.state,
+    seller: head.issuer_person,
+    listed_at: head.created_at,
+    make: t('make'),
+    model: t('model'),
+    year: n('year'),
+    price: n('price'),
+    currency: t('price_currency'),
+    location: t('location'),
+    mileage: n('mileage'),
+    vin: t('vin'),
+    description: t('description'),
+    body_style: t('body_style'),
+    transmission: t('transmission'),
+    fuel_type: t('fuel_type'),
+    exterior_color: t('exterior_color'),
+    condition: t('condition'),
+    title_status: t('title_status'),
+    accepts_offers: b('accepts_offers'),
+    accepts_trade: b('accepts_trade'),
+    photos: fields.get('photos')?.value_json ?? null,
+    expires_at: fields.get('expires_at')?.value_datetime ?? null,
+    /*
+      A BROKERED FIELD ARRIVES AS A COMMITMENT AND NEVER AS A VALUE, so what a
+      detail page can honestly say is WHO HOLDS the contact details -- not what
+      they are. `get_token` returns the custodian's name for exactly this, which
+      is why the field is called contact_via rather than contact.
+    */
+    contact_via: fields.get('contact')?.custodian_name ?? null,
+    photo_base: photoBase,
+  };
+}
+
 interface SummaryRow {
   photo_base: unknown;
   id: unknown;
@@ -323,14 +469,6 @@ interface DetailRow {
   title_status: unknown;
   accepts_offers: unknown;
   accepts_trade: unknown;
-}
-
-interface OwnRow {
-  id: unknown;
-  name: unknown;
-  created_at: unknown;
-  state: unknown;
-  expires_at: unknown;
 }
 
 /**
@@ -431,7 +569,9 @@ export class ListingsClient {
    * than any this could raise.
    */
   async create(input: CreateListingInput): Promise<string> {
-    const { $type_id } = await this.typeAndState();
+    // The live version, resolved through an action. `create` mints into whichever
+    // version is current, which is the whole point of the family sentinel.
+    const $type_id = await this.liveTypeId();
 
     const text = new FieldPairs();
     text.put('make', input.make);
@@ -600,7 +740,7 @@ export class ListingsClient {
    * string would infer text and a number int8, and the action refuses both.
    */
   async setFee(durationDays: bigint | number, fee: string | number): Promise<string> {
-    const { $type_id } = await this.typeAndState();
+    const $type_id = await this.liveTypeId();
     return await this.client.write(
       'set_type_fee',
       {
@@ -646,97 +786,30 @@ export class ListingsClient {
    * SELECT granted, so the pivot happens here.
    */
   async get(listingId: bigint | number): Promise<Listing | null> {
-    const rows = await this.client.query<DetailRow>(
-      `SELECT t.id AS listing_id, t.name AS title, st.name AS state,
-              p.display_name AS seller,
-              mk.value_text AS make, mo.value_text AS model,
-              myv.value_number AS year, pr.value_number AS price,
-              cu.value_text AS currency, lo.value_text AS location,
-              mi.value_number AS mileage, vi.value_text AS vin,
-              de.value_text AS description, ph.value_json AS photos,
-              cg.name AS contact_via, t.created_at AS listed_at,
-              ex.value_datetime AS expires_at,
-              bs.value_text AS body_style, tr.value_text AS transmission,
-              ft.value_text AS fuel_type, ec.value_text AS exterior_color,
-              cd.value_text AS condition, ts.value_text AS title_status,
-              ao.value_boolean AS accepts_offers,
-              at.value_boolean AS accepts_trade,
-              phe.url AS photo_base
-         FROM tokens t
-         /*
-           THE CUSTODIAN COMES BACK WITH THE ROWS, not from a second query.
-           photos holds object keys, so rendering one needs the custodian's
-           current address -- and asking separately costs a round trip per page
-           AND makes the grid paint placeholders first and swap the pictures in
-           when the second answer lands. It is one row joined against a
-           single-row table; there is no reason for it to be a second trip.
+    /*
+      `get_token` IS ALREADY LONG FORMAT: identity columns repeated per field row,
+      plus that field's value. So this pivots rather than joining, and the
+      fourteen LEFT JOINs this replaced are gone -- along with the assumption that
+      every one of them names a column a car happens to have.
 
-           The custodian is declared on the SHARED photos field
-           (token_type_id IS NULL), so this resolves once for every row rather
-           than per listing.
-         */
-         LEFT JOIN metadata_schemas phs ON phs.entity_type = 'token'
-                               AND phs.identifier = 'photos'
-                               AND phs.token_type_id IS NULL
-                               AND phs.deleted_at IS NULL
-         LEFT JOIN custodian_endpoints phe
-                               ON (phe.group_id = phs.custodian_group_id
-                                OR phe.person_id = phs.custodian_person_id)
-                               AND phe.deleted_at IS NULL
-         JOIN token_type_states st ON st.id = t.current_state_id
-         JOIN people p              ON p.id = t.issuer_person_id
-         LEFT JOIN metadata mk ON mk.entity_type = 'token' AND mk.entity_id = t.id
-                              AND mk.identifier = 'make' AND mk.deleted_at IS NULL
-         LEFT JOIN metadata mo ON mo.entity_type = 'token' AND mo.entity_id = t.id
-                              AND mo.identifier = 'model' AND mo.deleted_at IS NULL
-         LEFT JOIN metadata myv ON myv.entity_type = 'token' AND myv.entity_id = t.id
-                               AND myv.identifier = 'year' AND myv.deleted_at IS NULL
-         LEFT JOIN metadata pr ON pr.entity_type = 'token' AND pr.entity_id = t.id
-                              AND pr.identifier = 'price' AND pr.deleted_at IS NULL
-         LEFT JOIN metadata cu ON cu.entity_type = 'token' AND cu.entity_id = t.id
-                              AND cu.identifier = 'price_currency' AND cu.deleted_at IS NULL
-         LEFT JOIN metadata lo ON lo.entity_type = 'token' AND lo.entity_id = t.id
-                              AND lo.identifier = 'location' AND lo.deleted_at IS NULL
-         LEFT JOIN metadata mi ON mi.entity_type = 'token' AND mi.entity_id = t.id
-                              AND mi.identifier = 'mileage' AND mi.deleted_at IS NULL
-         LEFT JOIN metadata vi ON vi.entity_type = 'token' AND vi.entity_id = t.id
-                              AND vi.identifier = 'vin' AND vi.deleted_at IS NULL
-         LEFT JOIN metadata de ON de.entity_type = 'token' AND de.entity_id = t.id
-                              AND de.identifier = 'description' AND de.deleted_at IS NULL
-         LEFT JOIN metadata ph ON ph.entity_type = 'token' AND ph.entity_id = t.id
-                              AND ph.identifier = 'photos' AND ph.deleted_at IS NULL
-         LEFT JOIN metadata ct ON ct.entity_type = 'token' AND ct.entity_id = t.id
-                              AND ct.identifier = 'contact' AND ct.deleted_at IS NULL
-         LEFT JOIN groups cg   ON cg.id = ct.custodian_group_id
-         LEFT JOIN metadata bs ON bs.entity_type = 'token' AND bs.entity_id = t.id
-                              AND bs.identifier = 'body_style' AND bs.deleted_at IS NULL
-         LEFT JOIN metadata tr ON tr.entity_type = 'token' AND tr.entity_id = t.id
-                              AND tr.identifier = 'transmission' AND tr.deleted_at IS NULL
-         LEFT JOIN metadata ft ON ft.entity_type = 'token' AND ft.entity_id = t.id
-                              AND ft.identifier = 'fuel_type' AND ft.deleted_at IS NULL
-         LEFT JOIN metadata ec ON ec.entity_type = 'token' AND ec.entity_id = t.id
-                              AND ec.identifier = 'exterior_color' AND ec.deleted_at IS NULL
-         LEFT JOIN metadata cd ON cd.entity_type = 'token' AND cd.entity_id = t.id
-                              AND cd.identifier = 'condition' AND cd.deleted_at IS NULL
-         LEFT JOIN metadata ts ON ts.entity_type = 'token' AND ts.entity_id = t.id
-                              AND ts.identifier = 'title_status' AND ts.deleted_at IS NULL
-         LEFT JOIN metadata ao ON ao.entity_type = 'token' AND ao.entity_id = t.id
-                              AND ao.identifier = 'accepts_offers' AND ao.deleted_at IS NULL
-         LEFT JOIN metadata at ON at.entity_type = 'token' AND at.entity_id = t.id
-                              AND at.identifier = 'accepts_trade' AND at.deleted_at IS NULL
-        /*
-          WHEN THE PAID TERM ENDS. It was stored and enforced and never
-          returned: search joins it into its WHERE to drop expired listings,
-          but nothing selected it, so no UI could show it even if it wanted to.
-          A seller paid for a duration they had no way to see.
-        */
-        LEFT JOIN metadata ex ON ex.entity_type = 'token' AND ex.entity_id = t.id
-                             AND ex.identifier = 'expires_at' AND ex.deleted_at IS NULL
-        WHERE t.id = $token_id AND t.deleted_at IS NULL`,
-      { $token_id: asQueryInt(BigInt(listingId)) }
-    );
-    const row = rows[0];
-    if (!row) return null;
+      ONE EXTRA CALL FOR THE PHOTO ENDPOINT, cached. `get_token` gives the
+      declaration's custodian IDS but not its resolved url, and an object key
+      without an address renders nothing and reports nothing.
+    */
+    const rows = await this.client.readPublic<DetailHit>('get_token', {
+      $token_id: asQueryInt(BigInt(listingId)),
+    });
+    if (rows.length === 0) return null;
+
+    const head = rows[0];
+    if (head === undefined) return null;
+    const fields = new Map<string, DetailHit>();
+    for (const r of rows) {
+      const identifier = typeof r.identifier === 'string' ? r.identifier : '';
+      if (identifier !== '') fields.set(identifier, r);
+    }
+
+    const row: DetailRow = detailRowFrom(head, fields, await this.photoBase());
 
     return {
       listingId: toUnits(row.listing_id, 'listing_id'),
@@ -783,35 +856,107 @@ export class ListingsClient {
    * A join per predicate is comfortable at three or four. If the product grows
    * to a dozen facets this wants revisiting rather than more joins.
    */
+  /*
+    ─────────────────────────────────────────────────────────────────────────
+    THE READ PATH GOES THROUGH ACTIONS, NOT THROUGH TABLES.
+
+    badger-cash/branch#119. Every read here used to be a plain `SELECT`, on the
+    strength of decision 2b leaving SELECT granted -- so browse and search needed
+    no server-side code and no action per query. That held until the schema moved:
+    branch#69 renamed the registry and branch#118 made field declarations
+    type-scoped, and each one emptied the grid with an error INSIDE an HTTP 200.
+    The page rendered, the filters painted, nothing logged, and there were no cars.
+
+    A table name is not an interface. An action is.
+    ─────────────────────────────────────────────────────────────────────────
+  */
+
+  /**
+   * Every declared field of a set of records, keyed by id and then identifier.
+   *
+   * One call for a whole page. `token_fields` returns long format -- a row per
+   * (record, field) -- so this pivots it once and the callers read it like an
+   * object. Two round trips for a grid, never one per card.
+   */
+  private async fieldsFor(ids: bigint[]): Promise<Map<string, Map<string, FieldRow>>> {
+    const byToken = new Map<string, Map<string, FieldRow>>();
+    if (ids.length === 0) return byToken;
+
+    const rows = await this.client.readPublic<FieldRow>('token_fields', {
+      $token_ids: ids.map((id) => asQueryInt(id)),
+    });
+
+    for (const row of rows) {
+      const key = String(toUnits(row.token_id, 'token_id'));
+      let fields = byToken.get(key);
+      if (fields === undefined) {
+        fields = new Map<string, FieldRow>();
+        byToken.set(key, fields);
+      }
+      fields.set(asText(row.identifier, 'identifier'), row);
+    }
+    return byToken;
+  }
+
+  /**
+   * The live type id for this directory's family.
+   *
+   * `current_type_version` rather than a SELECT on `live_slug`, which also settles
+   * #44: the action resolves the family's CURRENT version, where the old query
+   * cached one type id for the client's lifetime and pinned the front end to
+   * whichever version was live when the page loaded. Still cached, because a page
+   * does not publish a new version underneath itself -- but cached from an action.
+   */
+  private async liveTypeId(): Promise<number> {
+    if (this.cachedTypeId !== undefined) return this.cachedTypeId;
+    const rows = await this.client.readPublic<{ type_id: unknown }>('current_type_version', {
+      $family: LISTING_TYPE_SLUG,
+    });
+    const row = rows[0];
+    if (!row) {
+      throw new BranchError(`the ${LISTING_TYPE_SLUG} type is not configured on this chain`);
+    }
+    this.cachedTypeId = asQueryInt(toUnits(row.type_id, 'type_id'));
+    return this.cachedTypeId;
+  }
+
+  private cachedTypeId: number | undefined;
+
+  /**
+   * Where the custodian holding this directory's photographs answers.
+   *
+   * A photograph is an object KEY (#109) and the address is the declaration's to
+   * give. Resolved through the action, WITH the type, because #118 made the
+   * declaration the type's own -- and a client that has the keys and not the
+   * endpoint renders an empty grid with no error at all.
+   */
+  private async photoBase(): Promise<string | null> {
+    if (this.cachedPhotoBase !== undefined) return this.cachedPhotoBase;
+    const rows = await this.client.readPublic<{ url: unknown }>(
+      'metadata_field_custodian_endpoint',
+      { $type_id: await this.liveTypeId(), $entity_type: 'token', $identifier: 'photos' }
+    );
+    const row = rows[0];
+    this.cachedPhotoBase = row === undefined ? null : asText(row.url, 'url');
+    return this.cachedPhotoBase;
+  }
+
+  private cachedPhotoBase: string | null | undefined;
+
   async search(options: SearchOptions = {}): Promise<ListingSummary[]> {
     const limit = clampLimit(options.limit);
-    const joins: string[] = [];
-    const where: string[] = [];
-    const params: Record<string, unknown> = { $take: limit };
 
     /*
-      ONE JOIN FOR EVERY TEXT FACET, however many there are.
-
-      This used to be a JOIN per predicate, and the comment below the old code
-      drew its own line: "comfortable at three or four. If the product grows to
-      a dozen facets this wants revisiting rather than more joins." Then #24
-      added eight facets, which would have taken a filtered browse past twenty
-      joins — so this is the revisiting.
-
-      The shape is one pass over `metadata` collecting the (identifier, value)
-      pairs asked for, grouped per listing, keeping only those that matched ALL
-      of them. `count(DISTINCT identifier)` rather than `count(*)`: an
-      identifier is unique per entity today, but a duplicate row would
-      otherwise let one satisfied facet stand in for two.
-
-      The twentieth facet now costs what the second does.
-
-      Values are folded rather than `lower()`ed in SQL: the declaration folds
-      on write, so a bare equality stays on `metadata_lookup_idx`, and
-      `lower(value_text)` here would scan every row because kwil has no
-      expression indexes.
+      THE FACETS ARE (identifier, value) PAIRS, not named parameters, because
+      that is what the action takes. `browse_listings` spelled every filter out
+      -- $make, $model, $year_min, $year_max, $price_max -- so a new facet meant
+      a new parameter on a generic action. `search_tokens` keys them by
+      identifier, so the eight text descriptors, two ranges and two flags below
+      are data rather than signature.
     */
-    const facets: Array<[string, string | undefined]> = [
+    const textKeys: string[] = [];
+    const textValues: string[] = [];
+    for (const [identifier, value] of [
       ['make', options.make],
       ['model', options.model],
       ['body_style', options.bodyStyle],
@@ -820,154 +965,118 @@ export class ListingsClient {
       ['exterior_color', options.exteriorColor],
       ['condition', options.condition],
       ['title_status', options.titleStatus],
-    ];
-
-    const pairs: string[] = [];
-    for (const [identifier, value] of facets) {
-      if (value === undefined || value.trim() === '') continue;
-      const key = `$f${pairs.length}`;
-      params[key] = value.trim().toLowerCase();
-      pairs.push(`(identifier = '${identifier}' AND value_text = ${key})`);
-    }
-
-    if (pairs.length > 0) {
-      params.$facets = pairs.length;
-      joins.push(
-        `JOIN ( SELECT entity_id
-                  FROM metadata
-                 WHERE entity_type = 'token' AND deleted_at IS NULL
-                   AND ( ${pairs.join('\n                      OR ')} )
-                 GROUP BY entity_id
-                HAVING count(DISTINCT identifier) = $facets ) fac
-              ON fac.entity_id = t.id`
-      );
-    }
-
-    const yearBounds: string[] = [];
-    if (options.yearFrom !== undefined) {
-      yearBounds.push(`my.value_number >= ${numericLiteral(options.yearFrom, 'yearFrom')}`);
-    }
-    if (options.yearTo !== undefined) {
-      yearBounds.push(`my.value_number <= ${numericLiteral(options.yearTo, 'yearTo')}`);
-    }
-    if (yearBounds.length > 0) {
-      joins.push(
-        `JOIN metadata my ON my.entity_type = 'token' AND my.entity_id = t.id
-                         AND my.identifier = 'year' AND my.deleted_at IS NULL
-                         AND ${yearBounds.join(' AND ')}`
-      );
+    ] as Array<[string, string | undefined]>) {
+      // TRIMMED, because '   ' is not a body style a seller chose. The old shape
+      // trimmed before building its join and this has to match.
+      const trimmed = value === undefined ? '' : value.trim();
+      if (trimmed === '') continue;
+      textKeys.push(identifier);
+      // FOLDED HERE AS WELL AS ON CHAIN. mint_token lowercases a field its
+      // declaration marks folded, and the action compares against what was
+      // stored, so a buyer typing 'Toyota' has to arrive as 'toyota'.
+      textValues.push(trimmed.toLowerCase());
     }
 
     /*
-      The flags are NOT in the pair join, because they are a different column.
-      `value_boolean` rather than `value_text`, so folding them into the same
-      OR chain would mean matching text against a boolean column — and there
-      are at most two of them, so a join each is the honest cost.
-
-      Only `true` is filterable, deliberately. "Show me cars whose seller
-      declined offers" is not a search anybody performs, and offering it would
-      quietly exclude every listing published before the field existed, whose
-      value is null rather than false.
+      RANGES AS THREE PARALLEL ARRAYS, with a NULL bound meaning unbounded on
+      that side. year carries both ends; maxPrice only an upper one.
     */
+    /*
+      VALIDATED HERE, STILL. The bounds used to be INLINED into the SQL, so this
+      check was an injection guard -- '2015; DROP TABLE tokens' had to be refused
+      before it reached a statement. They are parameters now and injection is not
+      the risk; the check stays because the failure it prevents is worse than it
+      was. An unvalidated bound reaches the action, fails its `::NUMERIC(38,10)`
+      cast, and comes back as a cast error from the planner: a caller who typed a
+      price wrong learns it from the database rather than from the parameter.
+    */
+    const bound = (value: string | number, field: string): string => {
+      const text = String(value).trim();
+      if (!/^-?\d+(\.\d+)?$/.test(text)) {
+        throw new BranchError(`${field} must be a decimal number, not ${JSON.stringify(value)}`);
+      }
+      return text;
+    };
+
+    const numberKeys: string[] = [];
+    const numberMins: Array<string | null> = [];
+    const numberMaxs: Array<string | null> = [];
+    if (options.yearFrom !== undefined || options.yearTo !== undefined) {
+      numberKeys.push('year');
+      numberMins.push(options.yearFrom === undefined ? null : bound(options.yearFrom, 'yearFrom'));
+      numberMaxs.push(options.yearTo === undefined ? null : bound(options.yearTo, 'yearTo'));
+    }
+    if (options.maxPrice !== undefined) {
+      numberKeys.push('price');
+      numberMins.push(null);
+      numberMaxs.push(bound(options.maxPrice, 'maxPrice'));
+    }
+
+    const booleanKeys: string[] = [];
+    const booleanValues: boolean[] = [];
     if (options.acceptsOffers === true) {
-      joins.push(
-        // fao, not mao: the PROJECTION already uses mao for this same
-        // identifier, and reusing it gives `table name "mao" specified more
-        // than once` -- refused by the planner, not by the type checker.
-        `JOIN metadata fao ON fao.entity_type = 'token' AND fao.entity_id = t.id
-                          AND fao.identifier = 'accepts_offers'
-                          AND fao.value_boolean = true AND fao.deleted_at IS NULL`
-      );
+      booleanKeys.push('accepts_offers');
+      booleanValues.push(true);
     }
     if (options.acceptsTrade === true) {
-      joins.push(
-        `JOIN metadata fat ON fat.entity_type = 'token' AND fat.entity_id = t.id
-                          AND fat.identifier = 'accepts_trade'
-                          AND fat.value_boolean = true AND fat.deleted_at IS NULL`
-      );
+      booleanKeys.push('accepts_trade');
+      booleanValues.push(true);
     }
 
-    if (options.maxPrice !== undefined) {
-      joins.push(
-        `JOIN metadata mp ON mp.entity_type = 'token' AND mp.entity_id = t.id
-                         AND mp.identifier = 'price' AND mp.deleted_at IS NULL
-                         AND mp.value_number <= ${numericLiteral(options.maxPrice, 'maxPrice')}`
-      );
+    /*
+      THE BOUNDS TRAVEL AS DECIMAL STRINGS, and the action casts them.
+
+      They used to be NUMERIC(38,10)[] and that could not be called reliably from
+      here, which only a running node revealed. Nothing infers to NUMERIC, so an
+      undeclared [2021] arrives as int8[] and is refused; declaring the type fixes
+      that, and then an array whose elements are ALL NULL arrives as numeric(0,0)[]
+      and is refused anyway -- which is precisely the array a caller filtering
+      `year >= 2015` with no upper bound produces. The common case was the broken
+      one, and it passed a unit test with a fake provider.
+
+      Text has none of it: text infers as text, a NULL element stays NULL, and the
+      precision is stated in the action rather than guessed from a value.
+    */
+    const found = await this.client.readPublic<SearchHit>('search_tokens', {
+      $type_slug: LISTING_TYPE_SLUG,
+      $text_keys: textKeys.length > 0 ? textKeys : null,
+      $text_values: textValues.length > 0 ? textValues : null,
+      $limit: limit,
+      $after_created_at: options.after
+        ? asQueryInt(BigInt(Math.floor(options.after.listedAt.getTime() / 1000)))
+        : null,
+      $after_id: options.after ? asQueryInt(options.after.listingId) : null,
+      $type_version: null,
+      $number_keys: numberKeys.length > 0 ? numberKeys : null,
+      $number_mins: numberMins.length > 0 ? numberMins : null,
+      $number_maxs: numberMaxs.length > 0 ? numberMaxs : null,
+      $boolean_keys: booleanKeys.length > 0 ? booleanKeys : null,
+      $boolean_values: booleanValues.length > 0 ? booleanValues : null,
+    });
+
+    const ids = found.map((hit) => toUnits(hit.token_id, 'token_id'));
+    const fields = await this.fieldsFor(ids);
+    const base = await this.photoBase();
+
+    /*
+      EXPIRED RECORDS ARE FILTERED HERE, and that is a real difference from the
+      retired action. `browse_listings` compared expires_at against
+      @block_timestamp on chain; `search_tokens` excludes terminal STATES but
+      knows nothing about deadlines, because a deadline is one directory's
+      declared field and not a property of a token. A lapsed record is still
+      `active` until the permissionless sweep moves it, so a grid that showed it
+      would be advertising something whose term has run out.
+    */
+    const now = Math.floor(Date.now() / 1000);
+    const out: ListingSummary[] = [];
+    for (const hit of found) {
+      const id = toUnits(hit.token_id, 'token_id');
+      const f = fields.get(String(id)) ?? new Map<string, FieldRow>();
+      const expires = f.get('expires_at')?.value_datetime;
+      if (expires !== undefined && expires !== null && Number(expires) <= now) continue;
+      out.push(this.toSummary(summaryRowFrom(hit, f, base)));
     }
-
-    if (options.after) {
-      // Strictly after the cursor in the same order the index provides.
-      params.$after_at = asQueryInt(BigInt(Math.floor(options.after.listedAt.getTime() / 1000)));
-      params.$after_id = asQueryInt(options.after.listingId);
-      where.push('(t.created_at < $after_at OR (t.created_at = $after_at AND t.id < $after_id))');
-    }
-
-    const rows = await this.client.query<SummaryRow>(
-      `SELECT t.id, t.name, t.created_at,
-              mkv.value_text  AS make,
-              mov.value_text  AS model,
-              myv.value_number AS year,
-              mpv.value_number AS price,
-              mcv.value_text  AS currency,
-              mlv.value_text  AS location,
-              mao.value_boolean AS accepts_offers,
-              mat.value_boolean AS accepts_trade,
-              mph.value_json AS photos,
-              phe.url AS photo_base
-         FROM tokens t
-         ${joins.join('\n         ')}
-         /*
-           THE CUSTODIAN COMES BACK WITH THE ROWS, not from a second query.
-           photos holds object keys, so rendering one needs the custodian's
-           current address -- and asking separately costs a round trip per page
-           AND makes the grid paint placeholders first and swap the pictures in
-           when the second answer lands. It is one row joined against a
-           single-row table; there is no reason for it to be a second trip.
-
-           The custodian is declared on the SHARED photos field
-           (token_type_id IS NULL), so this resolves once for every row rather
-           than per listing.
-         */
-         LEFT JOIN metadata_schemas phs ON phs.entity_type = 'token'
-                               AND phs.identifier = 'photos'
-                               AND phs.token_type_id IS NULL
-                               AND phs.deleted_at IS NULL
-         LEFT JOIN custodian_endpoints phe
-                               ON (phe.group_id = phs.custodian_group_id
-                                OR phe.person_id = phs.custodian_person_id)
-                               AND phe.deleted_at IS NULL
-
-         LEFT JOIN metadata mkv ON mkv.entity_type = 'token' AND mkv.entity_id = t.id
-                               AND mkv.identifier = 'make' AND mkv.deleted_at IS NULL
-         LEFT JOIN metadata mov ON mov.entity_type = 'token' AND mov.entity_id = t.id
-                               AND mov.identifier = 'model' AND mov.deleted_at IS NULL
-         LEFT JOIN metadata myv ON myv.entity_type = 'token' AND myv.entity_id = t.id
-                               AND myv.identifier = 'year' AND myv.deleted_at IS NULL
-         LEFT JOIN metadata mpv ON mpv.entity_type = 'token' AND mpv.entity_id = t.id
-                               AND mpv.identifier = 'price' AND mpv.deleted_at IS NULL
-         LEFT JOIN metadata mcv ON mcv.entity_type = 'token' AND mcv.entity_id = t.id
-                               AND mcv.identifier = 'price_currency' AND mcv.deleted_at IS NULL
-         LEFT JOIN metadata mlv ON mlv.entity_type = 'token' AND mlv.entity_id = t.id
-                               AND mlv.identifier = 'location' AND mlv.deleted_at IS NULL
-         LEFT JOIN metadata mao ON mao.entity_type = 'token' AND mao.entity_id = t.id
-                               AND mao.identifier = 'accepts_offers' AND mao.deleted_at IS NULL
-         LEFT JOIN metadata mat ON mat.entity_type = 'token' AND mat.entity_id = t.id
-                               AND mat.identifier = 'accepts_trade' AND mat.deleted_at IS NULL
-         LEFT JOIN metadata mph ON mph.entity_type = 'token' AND mph.entity_id = t.id
-                               AND mph.identifier = 'photos' AND mph.deleted_at IS NULL
-         LEFT JOIN metadata mev ON mev.entity_type = 'token' AND mev.entity_id = t.id
-                               AND mev.identifier = 'expires_at' AND mev.deleted_at IS NULL
-        WHERE t.token_type_id = $type_id
-          AND t.current_state_id = $active
-          AND t.deleted_at IS NULL
-          AND (mev.value_datetime IS NULL OR mev.value_datetime > $now)
-          ${where.length > 0 ? `AND ${where.join(' AND ')}` : ''}
-        ORDER BY t.created_at DESC, t.id DESC
-        LIMIT $take`,
-      { ...params, ...(await this.typeAndState()), $now: Math.floor(Date.now() / 1000) }
-    );
-
-    return rows.map((row) => this.toSummary(row));
+    return out;
   }
 
   /**
@@ -978,36 +1087,31 @@ export class ListingsClient {
    * is the lookup that fails open if it is not normalised.
    */
   async mine(options: { limit?: number } = {}): Promise<OwnListing[]> {
-    const rows = await this.client.query<OwnRow>(
-      `SELECT t.id, t.name, t.created_at, s.name AS state,
-              ex.value_datetime AS expires_at
-         FROM tokens t
-         JOIN token_type_states s ON s.id = t.current_state_id
-         JOIN person_keys k        ON k.person_id = t.issuer_person_id
-         /* The seller paid for the term, so this is the page that most needs it. */
-         LEFT JOIN metadata ex ON ex.entity_type = 'token' AND ex.entity_id = t.id
-                              AND ex.identifier = 'expires_at' AND ex.deleted_at IS NULL
-        WHERE t.token_type_id = $type_id
-          AND k.address = $address
-          AND k.confirmed_at IS NOT NULL
-          AND k.revoked_at IS NULL
-          AND t.deleted_at IS NULL
-        ORDER BY t.created_at DESC, t.id DESC
-        LIMIT $take`,
-      {
-        $type_id: (await this.typeAndState()).$type_id,
-        $address: this.client.address,
-        $take: clampLimit(options.limit),
-      }
-    );
+    /*
+      `my_tokens` RESOLVES THE CALLER, which this used to do by hand: it joined
+      `person_keys` on `this.client.address` and carried the confirmed/revoked
+      predicates itself. That made the client the owner of the
+      address-normalisation rule -- `WHERE address = lower(@caller)` -- which is
+      the single most repeated trap in this schema and not a client's to keep.
+    */
+    const found = await this.client.read<OwnHit>('my_tokens', {
+      $type_slug: LISTING_TYPE_SLUG,
+      $limit: clampLimit(options.limit),
+    });
 
-    return rows.map((row) => ({
-      listingId: toUnits(row.id, 'id'),
-      title: asText(row.name, 'name'),
-      state: asText(row.state, 'state'),
-      listedAt: toDate(row.created_at),
-      expiresAt: toOptionalDate(row.expires_at),
-    }));
+    // The seller paid for the term, so this is the page that most needs it.
+    const fields = await this.fieldsFor(found.map((h) => toUnits(h.token_id, 'token_id')));
+
+    return found.map((hit) => {
+      const f = fields.get(String(toUnits(hit.token_id, 'token_id')));
+      return {
+        listingId: toUnits(hit.token_id, 'token_id'),
+        title: asText(hit.name, 'name'),
+        state: asText(hit.state, 'state'),
+        listedAt: toDate(hit.created_at),
+        expiresAt: toOptionalDate(f?.get('expires_at')?.value_datetime ?? null),
+      };
+    });
   }
 
   private toSummary(row: SummaryRow): ListingSummary {
@@ -1042,18 +1146,19 @@ export class ListingsClient {
    * than guessed at.
    */
   async fees(): Promise<FeeTier[]> {
-    const { $type_id } = await this.typeAndState();
-    const rows = await this.client.query<{ identifier: unknown; value_number: unknown }>(
-      // `'token_class'` IS A DATA VALUE, NOT AN IDENTIFIER. The table/column
-      // rename (branch#69) is `ALTER TABLE ... RENAME` and does not touch rows
-      // already written, nor the `metadata_entity_vocab` CHECK that admits this
-      // string. It stays spelled the old way until branch says otherwise.
-      `SELECT identifier, value_number
-         FROM metadata
-        WHERE entity_type = 'token_class'
-          AND entity_id = $type_id
-          AND deleted_at IS NULL`,
-      { $type_id }
+    /*
+      `type_fee_tiers` RETURNS THE RATE CARD AS A SET. `listing_fee` answers for
+      ONE term, so a client offering a seller their choices had to read `metadata`
+      and filter for `fee_%d` itself -- which is how this package ended up owning
+      the identifier grammar. The action returns the identifier and the price; the
+      grammar stays here because a regex is the right tool for it, but the rows
+      come from an action rather than a table.
+
+      A tier whose identifier does not parse is skipped rather than guessed at.
+    */
+    const rows = await this.client.readPublic<{ identifier: unknown; fee: unknown }>(
+      'type_fee_tiers',
+      { $type_slug: LISTING_TYPE_SLUG }
     );
 
     const tiers: FeeTier[] = [];
@@ -1063,74 +1168,14 @@ export class ListingsClient {
       if (!match) continue;
       tiers.push({
         durationDays: Number(match[1]),
-        fee: roundToWholeCredits(toAmount(row.value_number, LISTING_SCALE, identifier), identifier),
+        // Rounded to whole credits, as the chain charges them. Dropped by accident
+        // in the move to the action, and the fees tests caught it.
+        fee: roundToWholeCredits(toAmount(row.fee, LISTING_SCALE, identifier), identifier),
       });
     }
-
     tiers.sort((a, b) => a.durationDays - b.durationDays);
     return tiers;
   }
-
-  /**
-   * Resolve the automobile type and its active state, once per client.
-   *
-   * `live_slug`, NOT `slug`, and the difference is a UNIQUE index. `slug` is not
-   * unique -- a type deleted and recreated leaves its old row behind with the
-   * same slug, and `token_types_live_slug_derived` nulls `live_slug` on the
-   * dead one. Matching on `slug` therefore returns whichever row the planner
-   * hands back first, which on a chain where a directory has been rebuilt is
-   * not reliably the live one. Migration 40 made this the convention and 46
-   * moved `browse_listings` onto it; this is the last read that had not caught
-   * up, and #74's rebuild is exactly the scenario that makes it matter.
-   */
-  private async typeAndState(): Promise<{ $type_id: number; $active: number }> {
-    if (this.cachedType) return this.cachedType;
-    const rows = await this.client.query<{ type_id: unknown; state_id: unknown }>(
-      `SELECT c.id AS type_id, s.id AS state_id
-         FROM token_types c
-         JOIN token_type_states s ON s.token_type_id = c.id AND s.name = $active_name
-        WHERE c.live_slug = $slug AND c.deleted_at IS NULL
-        LIMIT 1`,
-      { $slug: LISTING_TYPE_SLUG, $active_name: ACTIVE_STATE }
-    );
-    const row = rows[0];
-    if (!row) {
-      throw new BranchError(`the ${LISTING_TYPE_SLUG} type is not configured on this chain`);
-    }
-    this.cachedType = {
-      $type_id: asQueryInt(toUnits(row.type_id, 'type_id')),
-      $active: asQueryInt(toUnits(row.state_id, 'state_id')),
-    };
-    return this.cachedType;
-  }
-
-  private cachedType: { $type_id: number; $active: number } | undefined;
-}
-
-/**
- * A NUMERIC bound written into the SQL rather than bound as a parameter.
- *
- * `selectQuery` cannot declare parameter types -- unlike `execute`, which takes
- * a `types` map -- so kwil infers from the JavaScript value and nothing infers
- * to NUMERIC. A number becomes int8 and a string becomes text, and the planner
- * refuses both against a NUMERIC(38,10) column: "comparison operands must be
- * of the same type". Writing `$year::NUMERIC(38,10)` does not help either; the
- * cast is lost before Postgres sees the statement.
- *
- * Casting the column instead would work and would take every browse off
- * `metadata_number_idx`, since kwil has no expression indexes.
- *
- * So the literal is inlined -- but only after being matched against a strict
- * decimal pattern, so nothing but digits, one dot and a leading minus can ever
- * reach the statement. That is a whitelist, not an escape, which is what makes
- * it safe rather than merely careful.
- */
-function numericLiteral(value: string | number, field: string): string {
-  const text = typeof value === 'number' ? String(value) : value.trim();
-  if (!/^-?\d+(\.\d+)?$/.test(text)) {
-    throw new BranchError(`${field} must be a decimal number, received ${JSON.stringify(value)}`);
-  }
-  return `${text}::NUMERIC(38,10)`;
 }
 
 /** A decimal for an action parameter, where the type can be declared. */

@@ -268,7 +268,15 @@ describe('credits client', () => {
     });
 
     const history = await user.credits.history();
-    const fee = history.find((entry) => entry.settlementNote === 'listing publication');
+    /*
+      'paid mint', NOT 'listing publication', and the change is the point rather
+      than a rename. `create_listing` opened a settlement noted 'listing
+      publication'; badger-cash/branch#74 retired it and the generic `mint_token`
+      writes 'paid mint', because the action that charges no longer knows it is
+      publishing a listing. This assertion went stale then and nobody noticed,
+      because the integration suite needs a node and was not being run.
+    */
+    const fee = history.find((entry) => entry.settlementNote === 'paid mint');
 
     expect(fee, 'the listing fee did not appear on the statement').toBeTruthy();
     expect(fee?.reference).toBeNull();
