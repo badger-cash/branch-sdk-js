@@ -428,3 +428,95 @@ describe('tokens.mint', () => {
     expect(writes[0]?.inputs.$settlement_id).toBeNull();
   });
 });
+
+describe('tokens transitions', () => {
+  const signing = async () => {
+    const writes: Array<{ name: string; inputs: Record<string, unknown> }> = [];
+    const kwil = {
+      execute(body: { name: string; inputs: Record<string, unknown>[] }) {
+        writes.push({ name: body.name, inputs: body.inputs[0] ?? {} });
+        return Promise.resolve({ data: { tx_hash: '0xabc' } });
+      },
+      call: () => Promise.resolve({ data: { result: [] } }),
+      selectQuery: () => Promise.resolve({ data: [] }),
+    };
+    const client = await BranchClient.connect({
+      provider: 'http://example.invalid',
+      chainId: 'test-chain',
+      address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      signer: { signMessage: () => Promise.resolve('0x00') },
+      kwil: kwil as never,
+    });
+    return { client, writes };
+  };
+
+  it('sends the state name a caller chose, whatever it is', async () => {
+    /*
+      THE POINT OF #53. An event is `cancelled` and a business is `closed`;
+      neither is expressible through `ListingOutcome = 'sold' | 'withdrawn'`.
+      This passes the name through so a type nobody here has heard of works.
+    */
+    const { client, writes } = await signing();
+
+    await client.tokens.close(12, 'cancelled');
+
+    expect(writes[0]?.name).toBe('close_token');
+    expect(writes[0]?.inputs).toEqual({ $token_id: 12, $state_name: 'cancelled' });
+  });
+
+  it('does not pre-validate the state name, because the chain owns that rule', async () => {
+    /*
+      DELIBERATELY NO CLIENT-SIDE CHECK. `type_state` errors with `this type has
+      no state named X` and that arrives as ActionFailedError.log -- the message
+      worth showing a user. A second implementation here could disagree with the
+      chain, which is worse than none.
+
+      So a nonsense state must still REACH the node. This fails if anybody adds
+      a vocabulary guard.
+    */
+    const { client, writes } = await signing();
+
+    await client.tokens.close(12, 'not-a-state-on-any-type');
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.inputs.$state_name).toBe('not-a-state-on-any-type');
+  });
+
+  it('moderates with a state and a mandatory reason', async () => {
+    const { client, writes } = await signing();
+
+    await client.tokens.moderate(12n, 'withdrawn', 'duplicate listing');
+
+    expect(writes[0]?.name).toBe('moderate_token');
+    expect(writes[0]?.inputs).toEqual({
+      $token_id: 12,
+      $state_name: 'withdrawn',
+      $reason: 'duplicate listing',
+    });
+  });
+
+  it('expires without a state name, because the type configures which one', async () => {
+    // `expire_token` reads the type's own expiry state through
+    // `type_expiry_state`, so it is configuration rather than a caller's choice.
+    const { client, writes } = await signing();
+
+    await client.tokens.expire(12);
+
+    expect(writes[0]?.name).toBe('expire_token');
+    expect(writes[0]?.inputs).toEqual({ $token_id: 12 });
+  });
+
+  it('accepts a bigint or a number id alike', async () => {
+    const { client, writes } = await signing();
+
+    await client.tokens.close(9007199254740991n, 'sold');
+    expect(writes[0]?.inputs.$token_id).toBe(9007199254740991);
+  });
+
+  it('refuses an id past MAX_SAFE_INTEGER rather than losing precision', async () => {
+    const { client, writes } = await signing();
+
+    await expect(client.tokens.close(9007199254740993n, 'sold')).rejects.toThrow(BranchError);
+    expect(writes).toHaveLength(0);
+  });
+});
