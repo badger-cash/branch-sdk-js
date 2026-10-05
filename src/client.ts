@@ -14,6 +14,7 @@ import { CustodiansClient } from './custodians.js';
 import { IdentityClient } from './identity.js';
 import { ListingsClient } from './listings.js';
 import { TokensClient } from './tokens.js';
+import { TypesClient } from './tokenTypes.js';
 
 import type { CanonicalAddress } from './address.js';
 import type { KwilEthSigner } from './signer.js';
@@ -174,6 +175,13 @@ export class BranchClient {
    * (badger-cash/branch-sdk-js#56).
    */
   readonly tokens: TokensClient;
+  /**
+   * What a type declares, so a consumer can ASK rather than compile it in.
+   *
+   * The keystone of #46: without it, every consumer re-hardcodes the field names
+   * this package stopped hardcoding.
+   */
+  readonly types: TypesClient;
 
   private constructor(
     private readonly kwil: KwilLike,
@@ -190,6 +198,7 @@ export class BranchClient {
     this.credits = new CreditsClient(this);
     this.custodians = new CustodiansClient(this);
     this.tokens = new TokensClient(this);
+    this.types = new TypesClient(this);
     this.listings = new ListingsClient(this);
   }
 

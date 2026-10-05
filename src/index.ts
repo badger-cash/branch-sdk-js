@@ -48,6 +48,15 @@ export type {
   SearchOptions,
 } from './listings.js';
 
+export { TypesClient } from './tokenTypes.js';
+export type {
+  DeclaredField,
+  FieldDatatype,
+  FieldUniqueScope,
+  TypeSchema,
+  TypeVersion,
+} from './tokenTypes.js';
+
 export { TokensClient } from './tokens.js';
 export type {
   BooleanFacet,
