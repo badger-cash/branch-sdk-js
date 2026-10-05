@@ -80,6 +80,18 @@ export interface TokenHit {
 }
 
 /**
+ * One of the caller's own records, in any state.
+ *
+ * ADDS `isTerminal`, which a seller's page needs and a buyer's grid does not: a
+ * seller must see what they withdrew, sold or let expire, and `is_terminal` is
+ * how the chain says "this one is finished" without a client knowing what the
+ * type calls its live state.
+ */
+export interface OwnTokenHit extends TokenHit {
+  isTerminal: boolean;
+}
+
+/**
  * One declared field of one record, as stored.
  *
  * ONE VALUE IS SET AND THE REST ARE NULL, chosen by `datatype`. A brokered
@@ -97,6 +109,17 @@ export interface TokenField {
   json: string | null;
   /** Set only for a field whose declaration says `requires_custodian`. */
   hmacHex: string | null;
+  /**
+   * The custodian's NAME, which is what a page can honestly show for a brokered
+   * field: who holds the details, never what they are.
+   *
+   * ONLY `get_token` RETURNS IT. `token_fields` carries `custodian_url` but not
+   * the name, so this is null on a field that came from a batch read. That
+   * asymmetry is the chain's and is not worth a second type: a grid shows a
+   * photograph (which needs the url) and a detail page shows "ask CNMI Central"
+   * (which needs the name).
+   */
+  custodianName: string | null;
   /** Where the custodian for this field answers, resolved from the declaration. */
   custodianUrl: string | null;
 }
@@ -148,8 +171,14 @@ interface HitRow {
   type_version: unknown;
 }
 
+interface OwnHitRow extends HitRow {
+  is_terminal: unknown;
+}
+
 interface FieldRow {
   token_id: unknown;
+  /** Absent from `token_fields`; present on `get_token`. */
+  custodian_name?: unknown;
   identifier: unknown;
   datatype: unknown;
   value_text: unknown;
@@ -172,7 +201,6 @@ interface RecordRow extends FieldRow {
   state: unknown;
   created_at: unknown;
   is_brokered: unknown;
-  custodian_name: unknown;
 }
 
 /** An INT8 action parameter from either representation a caller holds. */
@@ -218,6 +246,7 @@ function fieldFrom(row: FieldRow): TokenField {
         : Number(row.value_datetime),
     json: asTextOrNull(row.value_json),
     hmacHex: asTextOrNull(row.value_hmac),
+    custodianName: asTextOrNull(row.custodian_name),
     custodianUrl: asTextOrNull(row.custodian_url),
   };
 }
@@ -530,6 +559,35 @@ export class TokensClient {
    * is on the record, and nobody else. The target state must be one this type
    * declares and must be terminal; both are the chain's checks.
    */
+  /**
+   * The caller's own records of a type, in every state.
+   *
+   * SIGNED, unlike `search`, because `my_tokens` resolves `@caller`. That is also
+   * why it is not filtered to live records: a seller needs to see what they
+   * withdrew, sold or let expire.
+   *
+   * THE CALLER RESOLUTION IS THE CHAIN'S, which matters more than it looks.
+   * Doing it here would mean joining `person_keys` on the address, and `@caller`
+   * for an EVM signer is EIP-55 checksummed while `person_keys.address` is
+   * lowercase — so a bare comparison matches nothing, silently. That is the most
+   * repeated trap in this schema and not a client's to keep.
+   */
+  async mine(typeSlug: string, options: { limit?: number } = {}): Promise<OwnTokenHit[]> {
+    const rows = await this.client.read<OwnHitRow>('my_tokens', {
+      $type_slug: typeSlug,
+      $limit: clampLimit(options.limit),
+    });
+    return rows.map((row) => ({
+      tokenId: toUnits(row.token_id, 'token_id'),
+      name: asText(row.name, 'name'),
+      state: asText(row.state, 'state'),
+      isTerminal: Boolean(row.is_terminal),
+      createdAt: new Date(Number(row.created_at) * 1000),
+      typeId: Number(row.type_id),
+      typeVersion: Number(row.type_version),
+    }));
+  }
+
   async close(tokenId: bigint | number, stateName: string): Promise<string> {
     return await this.client.write('close_token', {
       $token_id: idOf(tokenId),

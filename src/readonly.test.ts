@@ -33,6 +33,14 @@ const fakeKwil = () => ({
               state: 'active',
               issuer_person: 'someone',
               created_at: 0,
+              // THE IDENTITY COLUMNS `get_token` ACTUALLY RETURNS. The fake
+              // omitted these while `listings.get` read the row directly and
+              // never looked at them; it goes through `tokens.get` now, which
+              // projects the record's own type and version.
+              type_slug: 'automobile-listing',
+              type_id: 2,
+              type_version: 1,
+              is_terminal: false,
               identifier: 'make',
               datatype: 'text',
               is_brokered: false,
@@ -121,6 +129,10 @@ describe('connectReadOnly', () => {
       state: 'active',
       issuer_person: 'Ada Lovelace',
       created_at: 1788224916,
+      type_slug: 'automobile-listing',
+      type_id: 2,
+      type_version: 1,
+      is_terminal: false,
       is_brokered: false,
       custodian_name: null,
     };

@@ -1,5 +1,6 @@
 import { METADATA_NUMERIC_SCALE, roundToWholeCredits, toAmount, toUnits } from './amount.js';
-import { asQueryInt, asText } from './coerce.js';
+import { numeric } from './client.js';
+import { asQueryInt, asText, decimalText } from './coerce.js';
 import { BranchError } from './errors.js';
 
 import type { CreditAmount } from './amount.js';
@@ -264,5 +265,36 @@ export class TypesClient {
     }
     tiers.sort((a, b) => a.durationDays - b.durationDays);
     return tiers;
+  }
+
+  /**
+   * Set what publishing costs for a given duration.
+   *
+   * A DIFFERENT OFFICE FROM MODERATION, and the chain separates them: this needs
+   * the governing organization's admin office, while `moderate_token` needs the
+   * type's `burning_role_id`. Taking a record down and changing what records cost
+   * are not the same authority, so a UI treating "holds an office" as one thing
+   * will offer this to somebody the node refuses.
+   *
+   * TAKES A TYPE ID, not a slug, because a reprice must land on a specific
+   * version rather than on whichever is live when the transaction arrives.
+   */
+  async setFee(
+    typeId: bigint | number,
+    durationDays: bigint | number,
+    fee: string | number
+  ): Promise<string> {
+    return await this.client.write(
+      'set_type_fee',
+      {
+        $type_id: asQueryInt(typeof typeId === 'bigint' ? typeId : BigInt(typeId)),
+        $duration_days: asQueryInt(
+          typeof durationDays === 'bigint' ? durationDays : BigInt(durationDays)
+        ),
+        $fee: decimalText(fee, 'fee'),
+      },
+      // Nothing infers to NUMERIC.
+      { $fee: numeric(38, 10) }
+    );
   }
 }
