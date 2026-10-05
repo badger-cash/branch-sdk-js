@@ -175,6 +175,10 @@ interface RecordRow extends FieldRow {
   custodian_name: unknown;
 }
 
+/** An INT8 action parameter from either representation a caller holds. */
+const idOf = (value: bigint | number): number =>
+  asQueryInt(typeof value === 'bigint' ? value : BigInt(value));
+
 /** An array parameter is sent only when it has elements; an empty one infers to `null[]`. */
 const orNull = <T>(xs: T[]): T[] | null => (xs.length > 0 ? xs : null);
 
@@ -355,9 +359,8 @@ export class TokensClient {
    * added precisely so a detail page costs one round trip rather than three.
    */
   async get(tokenId: bigint | number): Promise<TokenRecord | null> {
-    const id = typeof tokenId === 'bigint' ? tokenId : BigInt(tokenId);
     const rows = await this.client.readPublic<RecordRow>('get_token', {
-      $token_id: asQueryInt(id),
+      $token_id: idOf(tokenId),
     });
     if (rows.length === 0) return null;
 
@@ -500,5 +503,79 @@ export class TokensClient {
         $brokered_hmacs: textArray,
       }
     );
+  }
+
+  /*
+    STATE NAMES ARE PARAMETERS, NOT LITERALS -- badger-cash/branch-sdk-js#53.
+
+    `listings.ts` froze one type's vocabulary into the package: `ACTIVE_STATE`,
+    `MODERATED_STATE` and `ListingOutcome = 'sold' | 'withdrawn'`. An event is
+    `cancelled` and a business is `closed`, and neither is expressible that way.
+
+    THE CHAIN VALIDATES, SO THIS DOES NOT. `close_token` and `moderate_token`
+    both resolve the name through `type_state($type_id, $state_name)`, which
+    errors with `this type has no state named X`. That arrives as an
+    ActionFailedError whose `log` is the message worth showing a user.
+
+    So there is deliberately no client-side check here. A second implementation
+    of a rule the chain owns is a rule that can disagree with the chain, which is
+    worse than no check -- the same reason #52 does not re-apply declaration
+    precedence that `token_type_schema` already applies.
+  */
+
+  /**
+   * End a record, as its owner.
+   *
+   * AUTHORITY IS OWNERSHIP, not an office: the person whose `issuer_person_id`
+   * is on the record, and nobody else. The target state must be one this type
+   * declares and must be terminal; both are the chain's checks.
+   */
+  async close(tokenId: bigint | number, stateName: string): Promise<string> {
+    return await this.client.write('close_token', {
+      $token_id: idOf(tokenId),
+      $state_name: stateName,
+    });
+  }
+
+  /**
+   * Take a record down, as the office the type nominates.
+   *
+   * NOT `close`, and the chain records them differently: this writes a
+   * `moderated` event carrying the acting role and the reason, so a takedown is
+   * attributable afterwards to the office that made it. Authority is read from
+   * the TYPE -- `token_types.burning_role_id` -- so it is whatever office that
+   * type nominates rather than a fixed one.
+   *
+   * The reason is mandatory and the action refuses an empty one: a takedown
+   * nobody has to justify is a takedown nobody can review.
+   *
+   * THE STATE IS AN ARGUMENT HERE AND IS NOT IN `listings.moderate`, which is
+   * the right split rather than an inconsistency. Offering a moderator a choice
+   * of terminal state would let them file a takedown as 'sold'; constraining it
+   * to one is a PRODUCT decision about a particular directory, so it belongs in
+   * the adapter that knows which directory it is -- not in a client that must
+   * serve a type whose takedown state nobody here has heard of.
+   */
+  async moderate(tokenId: bigint | number, stateName: string, reason: string): Promise<string> {
+    return await this.client.write('moderate_token', {
+      $token_id: idOf(tokenId),
+      $state_name: stateName,
+      $reason: reason,
+    });
+  }
+
+  /**
+   * Retire a record whose paid term has run out.
+   *
+   * NO STATE NAME, and that is the action's shape rather than an omission:
+   * `expire_token` reads the type's own configured expiry state through
+   * `type_expiry_state`, so which state means "expired" is configuration on the
+   * type instead of a caller's choice.
+   *
+   * PERMISSIONLESS BY DESIGN. Anyone may sweep a lapsed record, because a term
+   * that has run out should not depend on its seller to admit it.
+   */
+  async expire(tokenId: bigint | number): Promise<string> {
+    return await this.client.write('expire_token', { $token_id: idOf(tokenId) });
   }
 }
