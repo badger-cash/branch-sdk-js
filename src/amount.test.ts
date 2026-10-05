@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { AmountPrecisionError, formatAmount, parseAmount, toUnits } from './amount.js';
+import {
+  AmountPrecisionError,
+  METADATA_NUMERIC_SCALE,
+  formatAmount,
+  parseAmount,
+  toAmount,
+  toUnits,
+} from './amount.js';
 
 describe('reading NUMERIC(78,0) off the wire', () => {
   it('accepts the forms a node may send', () => {
@@ -116,5 +123,40 @@ describe('parseAmount', () => {
     expect(() => parseAmount('', 2)).toThrow(AmountPrecisionError);
     expect(() => parseAmount('abc', 2)).toThrow(AmountPrecisionError);
     expect(() => parseAmount('1.2.3', 2)).toThrow(AmountPrecisionError);
+  });
+});
+
+describe('METADATA_NUMERIC_SCALE', () => {
+  it('is the scale the chain stores every numeric metadata value at', () => {
+    // `metadata.value_number` is NUMERIC(38,10). Not a directory's choice: one
+    // column is shared by every numeric field of every type.
+    expect(METADATA_NUMERIC_SCALE).toBe(10);
+  });
+
+  it('reads a chain decimal string without losing precision', () => {
+    /*
+      A NUMERIC arrives as a DECIMAL STRING of the value rather than pre-scaled
+      units, which is one of the three things the README says leaks through this
+      package by design. At scale 10 a price of 25000 arrives as
+      '25000.0000000000', and parsing it through a float would be how the
+      trailing digits go missing.
+    */
+    const price = toAmount('25000.0000000000', METADATA_NUMERIC_SCALE, 'price');
+    expect(price.units).toBe(250000000000000n);
+    expect(price.decimals).toBe(10);
+    expect(formatAmount(price, { trim: true })).toBe('25000');
+  });
+
+  it('is not the credit ledger scale, which is 0', () => {
+    /*
+      THE DISTINCTION THAT MATTERED. Credits are whole and `listing_fee` returns
+      NUMERIC(78,0). A fee read off the scale-10 column and handed back unrounded
+      produces `units` a thousand million times larger than a balance's, and the
+      comparison then passes on an empty account.
+    */
+    const feeAsStored = toAmount('1.0000000000', METADATA_NUMERIC_SCALE, 'fee');
+    const oneCredit = toAmount('1', 0, 'balance');
+    expect(feeAsStored.units).not.toBe(oneCredit.units);
+    expect(formatAmount(feeAsStored, { trim: true })).toBe(formatAmount(oneCredit));
   });
 });

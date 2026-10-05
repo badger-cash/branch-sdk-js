@@ -1,4 +1,4 @@
-import { toAmount, toUnits } from './amount.js';
+import { METADATA_NUMERIC_SCALE, toAmount, toUnits } from './amount.js';
 import { boolArray, intArray, numeric, numericArray, textArray } from './client.js';
 // ONE IMPLEMENTATION, NOT TWO. These were private here until tokens.ts needed
 // the same three; a second copy of the MAX_SAFE_INTEGER check is a second
@@ -9,9 +9,6 @@ import { objectUrl } from './custodians.js';
 
 import type { CreditAmount } from './amount.js';
 import type { BranchClient } from './client.js';
-
-/** `value_number` is NUMERIC(38,10); prices and mileage carry that scale. */
-export const LISTING_SCALE = 10;
 
 /**
  * The automobile directory, by the slug its type carries on chain.
@@ -823,7 +820,7 @@ export class ListingsClient {
       make: asText(row.make, 'make'),
       model: asText(row.model, 'model'),
       year: Number(toUnits(row.year, 'year')),
-      price: toAmount(row.price, LISTING_SCALE, 'price'),
+      price: toAmount(row.price, METADATA_NUMERIC_SCALE, 'price'),
       currency: asText(row.currency, 'currency'),
       location: asText(row.location, 'location'),
       mileage: toUnits(row.mileage, 'mileage'),
@@ -1149,7 +1146,7 @@ export class ListingsClient {
       make: asText(row.make, 'make'),
       model: asText(row.model, 'model'),
       year: Number(toUnits(row.year, 'year')),
-      price: toAmount(row.price, LISTING_SCALE, 'price'),
+      price: toAmount(row.price, METADATA_NUMERIC_SCALE, 'price'),
       currency: asText(row.currency, 'currency'),
       location: asText(row.location, 'location'),
       listedAt: toDate(row.created_at),
@@ -1198,7 +1195,7 @@ export class ListingsClient {
         durationDays: Number(match[1]),
         // Rounded to whole credits, as the chain charges them. Dropped by accident
         // in the move to the action, and the fees tests caught it.
-        fee: roundToWholeCredits(toAmount(row.fee, LISTING_SCALE, identifier), identifier),
+        fee: roundToWholeCredits(toAmount(row.fee, METADATA_NUMERIC_SCALE, identifier), identifier),
       });
     }
     tiers.sort((a, b) => a.durationDays - b.durationDays);
