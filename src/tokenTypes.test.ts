@@ -163,3 +163,88 @@ describe('types.versionSchema', () => {
     expect(names(kwil)).not.toContain('current_type_version');
   });
 });
+
+describe('types.feeTiers', () => {
+  const withTiers = (rows: Array<{ identifier: unknown; fee: unknown }>) => ({
+    selectQuery: vi.fn().mockResolvedValue({ data: [] }),
+    call: vi
+      .fn()
+      .mockImplementation((body: { name: string }) =>
+        body.name === 'type_fee_tiers'
+          ? Promise.resolve({ data: { result: rows } })
+          : Promise.resolve({ data: { result: [] } })
+      ),
+    execute: vi.fn(),
+  });
+
+  it('is cheapest first, whatever order the chain returns', async () => {
+    const kwil = withTiers([
+      { identifier: 'fee_180d', fee: '3.0000000000' },
+      { identifier: 'fee_7d', fee: '1.0000000000' },
+      { identifier: 'fee_30d', fee: '1.0000000000' },
+    ]);
+    const client = await connect(kwil);
+
+    const tiers = await client.types.feeTiers('automobile-listing');
+    expect(tiers.map((t) => t.durationDays)).toEqual([7, 30, 180]);
+  });
+
+  it('rounds to whole credits, the way the ledger charges them', async () => {
+    /*
+      SCALE 0, NOT 10. The stored rate is NUMERIC(38,10) but `listing_fee`
+      returns NUMERIC(78,0) and the ledger has scale 0. Handing back the
+      scale-10 figure gives `units` a thousand million times larger than a
+      balance's, and the comparison then passes on an empty account.
+
+      3.2 rounds to 3 — half away from zero, as Postgres casts, not as
+      Math.round would.
+    */
+    const kwil = withTiers([{ identifier: 'fee_180d', fee: '3.2000000000' }]);
+    const client = await connect(kwil);
+
+    const [tier] = await client.types.feeTiers('automobile-listing');
+    expect(tier?.fee).toEqual({ units: 3n, decimals: 0 });
+  });
+
+  it('returns nothing for a type that is curated rather than sold', async () => {
+    /*
+      GOVERNMENT. "No tiers" is not "free", and a caller must be able to tell
+      them apart — an empty array says the type sells no durations at all.
+    */
+    const kwil = withTiers([]);
+    const client = await connect(kwil);
+
+    await expect(client.types.feeTiers('government-notice')).resolves.toEqual([]);
+  });
+
+  it('skips an identifier that is not a tier rather than guessing at it', async () => {
+    // `_` is a single-character wildcard, so a LIKE 'fee_%d' would also match
+    // `feeXd`. The grammar is stated exactly, and a row outside it is skipped.
+    const kwil = withTiers([
+      { identifier: 'fee_30d', fee: '1.0000000000' },
+      { identifier: 'feeXd', fee: '9.0000000000' },
+      { identifier: 'photos', fee: '0.0000000000' },
+      { identifier: 'fee_d', fee: '9.0000000000' },
+    ]);
+    const client = await connect(kwil);
+
+    const tiers = await client.types.feeTiers('automobile-listing');
+    expect(tiers).toHaveLength(1);
+    expect(tiers[0]?.durationDays).toBe(30);
+  });
+
+  it('asks about the type it was given, not a hardcoded one', async () => {
+    const kwil = withTiers([]);
+    const client = await connect(kwil);
+
+    await client.types.feeTiers('everyday-item');
+    const call = kwil.call.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'type_fee_tiers'
+    );
+    expect((call?.[0] as { inputs: Record<string, unknown> }).inputs.$type_slug).toBe(
+      'everyday-item'
+    );
+    // Unsigned: a seller sees the price before signing anything.
+    for (const args of kwil.call.mock.calls) expect(args).toHaveLength(1);
+  });
+});

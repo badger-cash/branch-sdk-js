@@ -39,7 +39,6 @@ export { LISTING_TYPE_SLUG, ListingsClient } from './listings.js';
 export type {
   BrowseOptions,
   CreateListingInput,
-  FeeTier,
   Listing,
   ListingOutcome,
   ListingSummary,
@@ -51,6 +50,7 @@ export type {
 export { TypesClient } from './tokenTypes.js';
 export type {
   DeclaredField,
+  FeeTier,
   FieldDatatype,
   FieldUniqueScope,
   TypeSchema,
