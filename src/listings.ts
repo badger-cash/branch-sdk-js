@@ -1,5 +1,9 @@
 import { toAmount, toUnits } from './amount.js';
 import { boolArray, intArray, numeric, numericArray, textArray } from './client.js';
+// ONE IMPLEMENTATION, NOT TWO. These were private here until tokens.ts needed
+// the same three; a second copy of the MAX_SAFE_INTEGER check is a second
+// place to forget it.
+import { asQueryInt, asText, clampLimit } from './coerce.js';
 import { BranchError } from './errors.js';
 import { objectUrl } from './custodians.js';
 
@@ -1214,31 +1218,6 @@ function decimalString(value: string | number, field: string): string {
 function asActionInt(value: bigint | number): number {
   const asBig = typeof value === 'bigint' ? value : BigInt(value);
   return asQueryInt(asBig);
-}
-
-/** See the note in credits.ts: an INT8 has to cross as a checked number. */
-function asQueryInt(value: bigint): number {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < -BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new BranchError(
-      `${value.toString()} is past Number.MAX_SAFE_INTEGER and cannot be bound without losing precision`
-    );
-  }
-  return Number(value);
-}
-
-function clampLimit(limit: number | undefined): number {
-  if (limit === undefined) return 50;
-  if (!Number.isInteger(limit) || limit < 1) {
-    throw new BranchError(`limit must be a positive integer, received ${String(limit)}`);
-  }
-  return Math.min(limit, 200);
-}
-
-function asText(value: unknown, field: string): string {
-  if (typeof value !== 'string') {
-    throw new BranchError(`expected text for ${field}, received ${typeof value}`);
-  }
-  return value;
 }
 
 /**

@@ -13,6 +13,7 @@ import { CreditsClient } from './credits.js';
 import { CustodiansClient } from './custodians.js';
 import { IdentityClient } from './identity.js';
 import { ListingsClient } from './listings.js';
+import { TokensClient } from './tokens.js';
 
 import type { CanonicalAddress } from './address.js';
 import type { KwilEthSigner } from './signer.js';
@@ -165,6 +166,14 @@ export class BranchClient {
    */
   readonly custodians: CustodiansClient;
   readonly listings: ListingsClient;
+  /**
+   * Tokens of any type, addressed by slug.
+   *
+   * THE GENERIC SURFACE, and the one a second directory uses. `listings` is the
+   * automobile directory specifically and is becoming an adapter over this
+   * (badger-cash/branch-sdk-js#56).
+   */
+  readonly tokens: TokensClient;
 
   private constructor(
     private readonly kwil: KwilLike,
@@ -180,6 +189,7 @@ export class BranchClient {
     this.identity = new IdentityClient(this);
     this.credits = new CreditsClient(this);
     this.custodians = new CustodiansClient(this);
+    this.tokens = new TokensClient(this);
     this.listings = new ListingsClient(this);
   }
 
