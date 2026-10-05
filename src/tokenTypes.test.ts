@@ -183,7 +183,7 @@ describe('types.feeTiers', () => {
       { identifier: 'fee_7d', fee: '1.0000000000' },
       { identifier: 'fee_30d', fee: '1.0000000000' },
     ]);
-    const client = await connect(kwil as never);
+    const client = await connect(kwil);
 
     const tiers = await client.types.feeTiers('automobile-listing');
     expect(tiers.map((t) => t.durationDays)).toEqual([7, 30, 180]);
@@ -200,7 +200,7 @@ describe('types.feeTiers', () => {
       Math.round would.
     */
     const kwil = withTiers([{ identifier: 'fee_180d', fee: '3.2000000000' }]);
-    const client = await connect(kwil as never);
+    const client = await connect(kwil);
 
     const [tier] = await client.types.feeTiers('automobile-listing');
     expect(tier?.fee).toEqual({ units: 3n, decimals: 0 });
@@ -212,7 +212,7 @@ describe('types.feeTiers', () => {
       them apart — an empty array says the type sells no durations at all.
     */
     const kwil = withTiers([]);
-    const client = await connect(kwil as never);
+    const client = await connect(kwil);
 
     await expect(client.types.feeTiers('government-notice')).resolves.toEqual([]);
   });
@@ -226,7 +226,7 @@ describe('types.feeTiers', () => {
       { identifier: 'photos', fee: '0.0000000000' },
       { identifier: 'fee_d', fee: '9.0000000000' },
     ]);
-    const client = await connect(kwil as never);
+    const client = await connect(kwil);
 
     const tiers = await client.types.feeTiers('automobile-listing');
     expect(tiers).toHaveLength(1);
@@ -235,7 +235,7 @@ describe('types.feeTiers', () => {
 
   it('asks about the type it was given, not a hardcoded one', async () => {
     const kwil = withTiers([]);
-    const client = await connect(kwil as never);
+    const client = await connect(kwil);
 
     await client.types.feeTiers('everyday-item');
     const call = kwil.call.mock.calls.find(
