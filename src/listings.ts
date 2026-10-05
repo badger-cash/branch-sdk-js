@@ -1,14 +1,20 @@
 import { METADATA_NUMERIC_SCALE, toAmount, toUnits } from './amount.js';
-import { boolArray, intArray, numeric, numericArray, textArray } from './client.js';
 // ONE IMPLEMENTATION, NOT TWO. These were private here until tokens.ts needed
 // the same three; a second copy of the MAX_SAFE_INTEGER check is a second
 // place to forget it.
-import { asQueryInt, asText, clampLimit } from './coerce.js';
-import { BranchError } from './errors.js';
+import { asQueryInt, asText } from './coerce.js';
 import { objectUrl } from './custodians.js';
 
 import type { CreditAmount } from './amount.js';
 import type { FeeTier } from './tokenTypes.js';
+import type {
+  BooleanFacet,
+  RangeFacet,
+  TextFacet,
+  TokenField,
+  TokenHit,
+  TokenRecord,
+} from './tokens.js';
 import type { BranchClient } from './client.js';
 
 /**
@@ -267,67 +273,6 @@ export interface CreateListingInput {
   acceptsTrade?: boolean;
 }
 
-/**
- * One row of `token_fields`: a record, a declared field, and that field's value
- * in whichever column its datatype uses.
- *
- * `value_hmac` is hex rather than bytes -- the column is BYTEA and a TEXT return
- * refuses it, and hex is the form the custodian publishes a commitment in, so a
- * client recomputing one compares like with like.
- */
-interface FieldRow {
-  token_id: unknown;
-  identifier: unknown;
-  datatype: unknown;
-  value_text: unknown;
-  value_number: unknown;
-  value_boolean: unknown;
-  value_datetime: unknown;
-  value_json: unknown;
-  value_hmac: unknown;
-  custodian_url: unknown;
-}
-
-/** One row of `search_tokens`: identity only. The fields come separately. */
-interface SearchHit {
-  token_id: unknown;
-  name: unknown;
-  state: unknown;
-  created_at: unknown;
-  type_id: unknown;
-  type_version: unknown;
-}
-
-/** One row of `my_tokens`, which adds the terminal flag a seller's page needs. */
-interface OwnHit {
-  token_id: unknown;
-  name: unknown;
-  state: unknown;
-  is_terminal: unknown;
-  created_at: unknown;
-  type_id: unknown;
-  type_version: unknown;
-}
-
-/** One row of `get_token`: the record's identity repeated, plus one field. */
-interface DetailHit {
-  token_id: unknown;
-  type_slug: unknown;
-  name: unknown;
-  state: unknown;
-  issuer_person: unknown;
-  created_at: unknown;
-  identifier: unknown;
-  datatype: unknown;
-  is_brokered: unknown;
-  custodian_name: unknown;
-  value_text: unknown;
-  value_number: unknown;
-  value_boolean: unknown;
-  value_datetime: unknown;
-  value_json: unknown;
-}
-
 /*
   THE PIVOTS.
 
@@ -341,18 +286,14 @@ interface DetailHit {
   type-agnostic, and the car vocabulary starts exactly here. See
   badger-cash/branch-sdk-js#46.
 */
-function summaryRowFrom(
-  hit: SearchHit,
-  fields: Map<string, FieldRow>,
-  photoBase: string | null
-): SummaryRow {
-  const t = (k: string): unknown => fields.get(k)?.value_text ?? null;
-  const n = (k: string): unknown => fields.get(k)?.value_number ?? null;
-  const b = (k: string): unknown => fields.get(k)?.value_boolean ?? null;
+function summaryRowFrom(hit: TokenHit, fields: Map<string, TokenField>): SummaryRow {
+  const t = (k: string): unknown => fields.get(k)?.text ?? null;
+  const n = (k: string): unknown => fields.get(k)?.number ?? null;
+  const b = (k: string): unknown => fields.get(k)?.boolean ?? null;
   return {
-    id: hit.token_id,
+    id: hit.tokenId,
     name: hit.name,
-    created_at: hit.created_at,
+    created_at: Math.floor(hit.createdAt.getTime() / 1000),
     make: t('make'),
     model: t('model'),
     year: n('year'),
@@ -361,28 +302,26 @@ function summaryRowFrom(
     location: t('location'),
     accepts_offers: b('accepts_offers'),
     accepts_trade: b('accepts_trade'),
-    photos: fields.get('photos')?.value_json ?? null,
-    // THE FIELD'S OWN URL, not a network-wide one. #118 made the declaration the
-    // type's, so the endpoint travels with the field in `token_fields`; the
-    // cached fallback covers `get_token`, which does not carry it.
-    photo_base: fields.get('photos')?.custodian_url ?? photoBase,
+    photos: fields.get('photos')?.json ?? null,
+    // THE FIELD'S OWN URL, and there is no fallback any more. #118 made the
+    // declaration the type's so the endpoint travels with the field, and #122
+    // taught `get_token` to resolve it too — so the cached network-wide base the
+    // fallback used to supply has no remaining caller.
+    photo_base: fields.get('photos')?.custodianUrl ?? null,
   };
 }
 
-function detailRowFrom(
-  head: DetailHit,
-  fields: Map<string, DetailHit>,
-  photoBase: string | null
-): DetailRow {
-  const t = (k: string): unknown => fields.get(k)?.value_text ?? null;
-  const n = (k: string): unknown => fields.get(k)?.value_number ?? null;
-  const b = (k: string): unknown => fields.get(k)?.value_boolean ?? null;
+function detailRowFrom(record: TokenRecord): DetailRow {
+  const fields = record.fields;
+  const t = (k: string): unknown => fields.get(k)?.text ?? null;
+  const n = (k: string): unknown => fields.get(k)?.number ?? null;
+  const b = (k: string): unknown => fields.get(k)?.boolean ?? null;
   return {
-    listing_id: head.token_id,
-    title: head.name,
-    state: head.state,
-    seller: head.issuer_person,
-    listed_at: head.created_at,
+    listing_id: record.tokenId,
+    title: record.name,
+    state: record.state,
+    seller: record.issuerPerson,
+    listed_at: Math.floor(record.createdAt.getTime() / 1000),
     make: t('make'),
     model: t('model'),
     year: n('year'),
@@ -400,16 +339,25 @@ function detailRowFrom(
     title_status: t('title_status'),
     accepts_offers: b('accepts_offers'),
     accepts_trade: b('accepts_trade'),
-    photos: fields.get('photos')?.value_json ?? null,
-    expires_at: fields.get('expires_at')?.value_datetime ?? null,
+    photos: fields.get('photos')?.json ?? null,
+    expires_at: fields.get('expires_at')?.datetime ?? null,
     /*
       A BROKERED FIELD ARRIVES AS A COMMITMENT AND NEVER AS A VALUE, so what a
       detail page can honestly say is WHO HOLDS the contact details -- not what
       they are. `get_token` returns the custodian's name for exactly this, which
       is why the field is called contact_via rather than contact.
     */
-    contact_via: fields.get('contact')?.custodian_name ?? null,
-    photo_base: photoBase,
+    contact_via: fields.get('contact')?.custodianName ?? null,
+    /*
+      THE ROW'S OWN URL, AND NO EXTRA CALL FOR IT.
+      badger-cash/branch#122 taught `get_token` to resolve `custodian_url` from the
+      DECLARATION that governs each field, so the separate
+      `metadata_field_custodian_endpoint` lookup this used to await — which itself
+      awaited a `current_type_version` call first — is gone. A detail page cost
+      three round trips and now costs one, which is the same saving #49 made for
+      the grid and which was only half collected at the time.
+    */
+    photo_base: fields.get('photos')?.custodianUrl ?? null,
   };
 }
 
@@ -459,49 +407,29 @@ interface DetailRow {
 }
 
 /**
- * One of `mint_token`'s six key/value pairs, built so the two stay the same
- * length.
- *
- * THE PAIRING IS THE HAZARD, and it is silent. `unnest(keys, values)` zips to
- * the LONGER array and pads the shorter with NULLs, so a mismatch does not
- * fail: it writes a real value against a null identifier, or a null against a
- * real one, and lands as a constraint violation much later naming a column
- * rather than the mistake. The action checks all six lengths for exactly that
- * reason, and this makes the check unreachable by construction rather than
- * relying on two array literals being edited together.
- *
- * An absent value appends nothing to EITHER array, which is how a field the
- * seller said nothing about writes no row at all.
- */
-class FieldPairs {
-  readonly keys: string[] = [];
-  readonly values: string[] = [];
-
-  put(identifier: string, value: string | null | undefined): void {
-    if (value === null || value === undefined || value === '') return;
-    this.keys.push(identifier);
-    this.values.push(value);
-  }
-}
-
-/** The same, for the boolean pair, where `false` is an answer and must land. */
-class BoolPairs {
-  readonly keys: string[] = [];
-  readonly values: boolean[] = [];
-
-  put(identifier: string, value: boolean | undefined): void {
-    if (value === undefined) return;
-    this.keys.push(identifier);
-    this.values.push(value);
-  }
-}
-
-/**
  * Publishing, closing, and every read path a buyer uses.
  *
  * Writes go through actions, which is where the fee, the VIN guard and the
  * expiry stamp live. Reads are plain SELECTs: decision 2b leaves `SELECT`
  * granted, so the entire browse and search surface needs no server-side code.
+ */
+/**
+ * The automobile directory, as a thin adapter over the generic token surface.
+ *
+ * @deprecated Since 0.6.0; removed in **0.7.0**. Use `client.tokens` and
+ * `client.types` with the directory's own slug, and keep the car vocabulary in
+ * the application. Tracked by badger-cash/island-nook-directory-45#197.
+ *
+ * WHY AN ADAPTER RATHER THAN A CLEAN BREAK. `island-nook-directory-45` consumes
+ * this surface today and it works. Deleting it in the same release that added
+ * the generic one would have meant rewriting the front end under M3's schedule,
+ * which badger-cash/branch-sdk-js#46 warned against in as many words.
+ *
+ * NOTHING HERE REACHES THE CHAIN ANY MORE. Every method delegates to
+ * `client.tokens` or `client.types`; what remains is the mapping between car
+ * names and declared identifiers, plus two projections. That mapping is the
+ * thing that moves to the application, and when it has, this file is deleted
+ * rather than maintained.
  */
 export class ListingsClient {
   constructor(private readonly client: BranchClient) {}
@@ -558,98 +486,51 @@ export class ListingsClient {
   async create(input: CreateListingInput): Promise<string> {
     // The live version, resolved through an action. `create` mints into whichever
     // version is current, which is the whole point of the family sentinel.
-    const $type_id = await this.liveTypeId();
+    const { typeId } = await this.client.types.current(LISTING_TYPE_SLUG);
 
-    const text = new FieldPairs();
-    text.put('make', input.make);
-    text.put('model', input.model);
-    text.put('price_currency', input.priceCurrency);
-    text.put('location', input.location);
-    text.put('vin', input.vin);
-    text.put('description', input.description);
-    text.put('body_style', input.bodyStyle);
-    text.put('transmission', input.transmission);
-    text.put('fuel_type', input.fuelType);
-    text.put('exterior_color', input.exteriorColor);
-    text.put('condition', input.condition);
-    text.put('title_status', input.titleStatus);
-
-    const numbers = new FieldPairs();
-    numbers.put('price', decimalString(input.price, 'price'));
-    numbers.put('year', decimalString(input.year, 'year'));
-    numbers.put('mileage', decimalString(input.mileage, 'mileage'));
-
-    // An unanswered question writes no row and an explicit `false` writes one
-    // saying so, which here is the difference between sending the key and not
-    // sending it. Collapsing the two would tell a buyer somebody refused them
-    // when nobody was asked.
-    const booleans = new BoolPairs();
-    booleans.put('accepts_offers', input.acceptsOffers);
-    booleans.put('accepts_trade', input.acceptsTrade);
-
-    return await this.client.write(
-      'mint_token',
-      {
-        $type_id,
-        $state_name: ACTIVE_STATE,
-        $name: `${String(input.year)} ${input.make} ${input.model}`,
-        // The seller holds their own advertisement: the mint resolves their
-        // holder from @caller when this is null.
-        $to_holder_id: null,
-        // No agency signs an ad into existence. The type's `issuer_kind` is
-        // 'person', and a group here would be refused.
-        $as_group_id: null,
-        // The mint opens the settlement the fee is paid inside, which is
-        // invariant 15 -- the payment and the thing it paid for share one
-        // envelope. Handing it an existing one is for a caller batching several
-        // mints, which this is not.
-        $settlement_id: null,
-        $duration_days: input.durationDays,
-        // BOTH NULL FOR A NON-FUNGIBLE, and the action refuses either being
-        // set. An advertisement is one thing, not a quantity of them.
-        $symbol: null,
-        $quantity: null,
-        $note: 'listing published',
-        $text_keys: text.keys,
-        $text_values: text.values,
-        $number_keys: numbers.keys,
-        $number_values: numbers.values,
-        $boolean_keys: booleans.keys,
-        $boolean_values: booleans.values,
-        // EMPTY, AND IT HAS TO BE. `expires_at` is the only datetime this type
-        // declares, and supplying it alongside a paid term is refused.
-        $datetime_keys: [],
-        $datetime_values: [],
-        // `photos` is declared `json` and holds the object keys as one array,
-        // because an identifier cannot repeat on one entity.
-        $json_keys: ['photos'],
-        $json_values: [JSON.stringify(input.photos ?? [])],
-        // THE COMMITMENT, NEVER THE VALUE. `contact` is declared
-        // `requires_custodian`, so the chain stores an HMAC and a custodian's
-        // name. Every validator holds every row permanently and reads are
-        // unauthenticated, so the details stay off-chain by construction.
-        $brokered_keys: ['contact'],
-        $brokered_hmacs: [input.contactHmacHex],
+    return await this.client.tokens.mint({
+      typeId,
+      stateName: ACTIVE_STATE,
+      name: `${String(input.year)} ${input.make} ${input.model}`,
+      durationDays: asActionInt(input.durationDays),
+      note: 'listing published',
+      // KEYED BY DECLARED IDENTIFIER, which is the whole move: the car names are
+      // on this side and the generic client never learns them. `tokens.mint`
+      // drops an undefined or empty value and keeps an explicit `false`, which
+      // is the behaviour the pair builders here used to provide.
+      text: {
+        make: input.make,
+        model: input.model,
+        price_currency: input.priceCurrency,
+        location: input.location,
+        vin: input.vin,
+        description: input.description,
+        body_style: input.bodyStyle,
+        transmission: input.transmission,
+        fuel_type: input.fuelType,
+        exterior_color: input.exteriorColor,
+        condition: input.condition,
+        title_status: input.titleStatus,
       },
-      {
-        // Nothing infers to NUMERIC, and an empty array infers to `null[]`.
-        // client.ts's note on `textArray` says why all twelve are declared
-        // rather than only the ones that obviously cannot infer.
-        $quantity: numeric(78, 0),
-        $text_keys: textArray,
-        $text_values: textArray,
-        $number_keys: textArray,
-        $number_values: numericArray(38, 10),
-        $boolean_keys: textArray,
-        $boolean_values: boolArray,
-        $datetime_keys: textArray,
-        $datetime_values: intArray,
-        $json_keys: textArray,
-        $json_values: textArray,
-        $brokered_keys: textArray,
-        $brokered_hmacs: textArray,
-      }
-    );
+      numbers: {
+        price: input.price,
+        year: input.year,
+        mileage: input.mileage,
+      },
+      // An unanswered question writes no row and an explicit `false` writes one
+      // saying so. Collapsing the two would tell a buyer somebody refused them
+      // when nobody was asked.
+      booleans: {
+        accepts_offers: input.acceptsOffers,
+        accepts_trade: input.acceptsTrade,
+      },
+      // `photos` is declared `json` and holds the object keys as one array,
+      // because an identifier cannot repeat on one entity.
+      json: { photos: input.photos ?? [] },
+      // THE COMMITMENT, NEVER THE VALUE. `contact` is declared
+      // `requires_custodian`, so the chain stores an HMAC and a custodian's name.
+      brokered: { contact: input.contactHmacHex },
+    });
   }
 
   /**
@@ -667,10 +548,9 @@ export class ListingsClient {
    * `issuer_person_id` is on the token, and nobody else.
    */
   async close(listingId: bigint | number, outcome: ListingOutcome): Promise<string> {
-    return await this.client.write('close_token', {
-      $token_id: asActionInt(listingId),
-      $state_name: outcome,
-    });
+    // The union is this directory's constraint, not the chain's: `tokens.close`
+    // takes any state name and the chain validates it against the type.
+    return await this.client.tokens.close(listingId, outcome);
   }
 
   /**
@@ -701,11 +581,12 @@ export class ListingsClient {
    * afterwards despite sharing a state.
    */
   async moderate(listingId: bigint | number, reason: string): Promise<string> {
-    return await this.client.write('moderate_token', {
-      $token_id: asActionInt(listingId),
-      $state_name: MODERATED_STATE,
-      $reason: reason,
-    });
+    // THE STATE IS SUPPLIED HERE AND IS NOT AN ARGUMENT, which is the whole
+    // reason this wrapper survives: offering a moderator a choice of terminal
+    // state would let them file a takedown as 'sold'. Constraining it is a
+    // product decision about THIS directory, so it lives on this side of the
+    // adapter rather than in a client that must serve types nobody here knows.
+    return await this.client.tokens.moderate(listingId, MODERATED_STATE, reason);
   }
 
   /**
@@ -727,16 +608,8 @@ export class ListingsClient {
    * string would infer text and a number int8, and the action refuses both.
    */
   async setFee(durationDays: bigint | number, fee: string | number): Promise<string> {
-    const $type_id = await this.liveTypeId();
-    return await this.client.write(
-      'set_type_fee',
-      {
-        $type_id,
-        $duration_days: asActionInt(durationDays),
-        $fee: decimalString(fee, 'fee'),
-      },
-      { $fee: numeric(38, 10) }
-    );
+    const { typeId } = await this.client.types.current(LISTING_TYPE_SLUG);
+    return await this.client.types.setFee(typeId, durationDays, fee);
   }
 
   /**
@@ -783,20 +656,10 @@ export class ListingsClient {
       declaration's custodian IDS but not its resolved url, and an object key
       without an address renders nothing and reports nothing.
     */
-    const rows = await this.client.readPublic<DetailHit>('get_token', {
-      $token_id: asQueryInt(BigInt(listingId)),
-    });
-    if (rows.length === 0) return null;
+    const record = await this.client.tokens.get(listingId);
+    if (record === null) return null;
 
-    const head = rows[0];
-    if (head === undefined) return null;
-    const fields = new Map<string, DetailHit>();
-    for (const r of rows) {
-      const identifier = typeof r.identifier === 'string' ? r.identifier : '';
-      if (identifier !== '') fields.set(identifier, r);
-    }
-
-    const row: DetailRow = detailRowFrom(head, fields, await this.photoBase());
+    const row: DetailRow = detailRowFrom(record);
 
     return {
       listingId: toUnits(row.listing_id, 'listing_id'),
@@ -858,91 +721,14 @@ export class ListingsClient {
     ─────────────────────────────────────────────────────────────────────────
   */
 
-  /**
-   * Every declared field of a set of records, keyed by id and then identifier.
-   *
-   * One call for a whole page. `token_fields` returns long format -- a row per
-   * (record, field) -- so this pivots it once and the callers read it like an
-   * object. Two round trips for a grid, never one per card.
-   */
-  private async fieldsFor(ids: bigint[]): Promise<Map<string, Map<string, FieldRow>>> {
-    const byToken = new Map<string, Map<string, FieldRow>>();
-    if (ids.length === 0) return byToken;
-
-    const rows = await this.client.readPublic<FieldRow>('token_fields', {
-      $token_ids: ids.map((id) => asQueryInt(id)),
-    });
-
-    for (const row of rows) {
-      const key = String(toUnits(row.token_id, 'token_id'));
-      let fields = byToken.get(key);
-      if (fields === undefined) {
-        fields = new Map<string, FieldRow>();
-        byToken.set(key, fields);
-      }
-      fields.set(asText(row.identifier, 'identifier'), row);
-    }
-    return byToken;
-  }
-
-  /**
-   * The live type id for this directory's family.
-   *
-   * `current_type_version` rather than a SELECT on `live_slug`, which also settles
-   * #44: the action resolves the family's CURRENT version, where the old query
-   * cached one type id for the client's lifetime and pinned the front end to
-   * whichever version was live when the page loaded. Still cached, because a page
-   * does not publish a new version underneath itself -- but cached from an action.
-   */
-  private async liveTypeId(): Promise<number> {
-    if (this.cachedTypeId !== undefined) return this.cachedTypeId;
-    const rows = await this.client.readPublic<{ type_id: unknown }>('current_type_version', {
-      $family: LISTING_TYPE_SLUG,
-    });
-    const row = rows[0];
-    if (!row) {
-      throw new BranchError(`the ${LISTING_TYPE_SLUG} type is not configured on this chain`);
-    }
-    this.cachedTypeId = asQueryInt(toUnits(row.type_id, 'type_id'));
-    return this.cachedTypeId;
-  }
-
-  private cachedTypeId: number | undefined;
-
-  /**
-   * Where the custodian holding this directory's photographs answers.
-   *
-   * A photograph is an object KEY (#109) and the address is the declaration's to
-   * give. Resolved through the action, WITH the type, because #118 made the
-   * declaration the type's own -- and a client that has the keys and not the
-   * endpoint renders an empty grid with no error at all.
-   */
-  private async photoBase(): Promise<string | null> {
-    if (this.cachedPhotoBase !== undefined) return this.cachedPhotoBase;
-    const rows = await this.client.readPublic<{ url: unknown }>(
-      'metadata_field_custodian_endpoint',
-      { $type_id: await this.liveTypeId(), $entity_type: 'token', $identifier: 'photos' }
-    );
-    const row = rows[0];
-    this.cachedPhotoBase = row === undefined ? null : asText(row.url, 'url');
-    return this.cachedPhotoBase;
-  }
-
-  private cachedPhotoBase: string | null | undefined;
-
   async search(options: SearchOptions = {}): Promise<ListingSummary[]> {
-    const limit = clampLimit(options.limit);
-
     /*
-      THE FACETS ARE (identifier, value) PAIRS, not named parameters, because
-      that is what the action takes. `browse_listings` spelled every filter out
-      -- $make, $model, $year_min, $year_max, $price_max -- so a new facet meant
-      a new parameter on a generic action. `search_tokens` keys them by
-      identifier, so the eight text descriptors, two ranges and two flags below
-      are data rather than signature.
+      THE CAR NAMES ARE MAPPED HERE AND NOWHERE DEEPER. `tokens.search` takes
+      `(identifier, value)` and `(identifier, min, max)` pairs, so everything
+      this directory knows about an automobile lives in the three literals below
+      and the generic client never learns any of it.
     */
-    const textKeys: string[] = [];
-    const textValues: string[] = [];
+    const text: TextFacet[] = [];
     for (const [identifier, value] of [
       ['make', options.make],
       ['model', options.model],
@@ -953,127 +739,54 @@ export class ListingsClient {
       ['condition', options.condition],
       ['title_status', options.titleStatus],
     ] as Array<[string, string | undefined]>) {
-      // TRIMMED, because '   ' is not a body style a seller chose. The old shape
-      // trimmed before building its join and this has to match.
-      const trimmed = value === undefined ? '' : value.trim();
-      if (trimmed === '') continue;
-      textKeys.push(identifier);
-      // FOLDED HERE AS WELL AS ON CHAIN. mint_token lowercases a field its
-      // declaration marks folded, and the action compares against what was
-      // stored, so a buyer typing 'Toyota' has to arrive as 'toyota'.
-      textValues.push(trimmed.toLowerCase());
+      if (value === undefined) continue;
+      /*
+        STILL FOLDED HERE, AND IT IS REDUNDANT. The node folds the needle itself
+        per declaration — `CASE WHEN d.folded THEN lower(q.v) ELSE q.v END` — so
+        `tokens.search` passes values through untouched (#53). Every automobile
+        text facet happens to be declared folded, which makes lowercasing twice
+        harmless, and keeping it holds this change to a purely structural one.
+
+        It should go when the car vocabulary moves to the application
+        (badger-cash/island-nook-directory-45#197): for a field declared UNfolded
+        it would turn an exact search into one that can never match.
+      */
+      text.push({ identifier, value: value.toLowerCase() });
     }
 
-    /*
-      RANGES AS THREE PARALLEL ARRAYS, with a NULL bound meaning unbounded on
-      that side. year carries both ends; maxPrice only an upper one.
-    */
-    /*
-      VALIDATED HERE, STILL. The bounds used to be INLINED into the SQL, so this
-      check was an injection guard -- '2015; DROP TABLE tokens' had to be refused
-      before it reached a statement. They are parameters now and injection is not
-      the risk; the check stays because the failure it prevents is worse than it
-      was. An unvalidated bound reaches the action, fails its `::NUMERIC(38,10)`
-      cast, and comes back as a cast error from the planner: a caller who typed a
-      price wrong learns it from the database rather than from the parameter.
-    */
-    const bound = (value: string | number, field: string): string => {
-      const text = String(value).trim();
-      if (!/^-?\d+(\.\d+)?$/.test(text)) {
-        throw new BranchError(`${field} must be a decimal number, not ${JSON.stringify(value)}`);
-      }
-      return text;
-    };
-
-    const numberKeys: string[] = [];
-    const numberMins: Array<string | null> = [];
-    const numberMaxs: Array<string | null> = [];
+    const ranges: RangeFacet[] = [];
     if (options.yearFrom !== undefined || options.yearTo !== undefined) {
-      numberKeys.push('year');
-      numberMins.push(options.yearFrom === undefined ? null : bound(options.yearFrom, 'yearFrom'));
-      numberMaxs.push(options.yearTo === undefined ? null : bound(options.yearTo, 'yearTo'));
+      ranges.push({ identifier: 'year', min: options.yearFrom, max: options.yearTo });
     }
     if (options.maxPrice !== undefined) {
-      numberKeys.push('price');
-      numberMins.push(null);
-      numberMaxs.push(bound(options.maxPrice, 'maxPrice'));
+      ranges.push({ identifier: 'price', max: options.maxPrice });
     }
 
-    const booleanKeys: string[] = [];
-    const booleanValues: boolean[] = [];
-    if (options.acceptsOffers === true) {
-      booleanKeys.push('accepts_offers');
-      booleanValues.push(true);
-    }
-    if (options.acceptsTrade === true) {
-      booleanKeys.push('accepts_trade');
-      booleanValues.push(true);
-    }
+    // Flags filter only on true: "show me the ones open to offers" is a question,
+    // "show me the ones that are not" is not one anybody asked.
+    const booleans: BooleanFacet[] = [];
+    if (options.acceptsOffers === true)
+      booleans.push({ identifier: 'accepts_offers', value: true });
+    if (options.acceptsTrade === true) booleans.push({ identifier: 'accepts_trade', value: true });
 
-    /*
-      THE BOUNDS TRAVEL AS DECIMAL STRINGS, and the action casts them.
-
-      They used to be NUMERIC(38,10)[] and that could not be called reliably from
-      here, which only a running node revealed. Nothing infers to NUMERIC, so an
-      undeclared [2021] arrives as int8[] and is refused; declaring the type fixes
-      that, and then an array whose elements are ALL NULL arrives as numeric(0,0)[]
-      and is refused anyway -- which is precisely the array a caller filtering
-      `year >= 2015` with no upper bound produces. The common case was the broken
-      one, and it passed a unit test with a fake provider.
-
-      Text has none of it: text infers as text, a NULL element stays NULL, and the
-      precision is stated in the action rather than guessed from a value.
-    */
-    const found = await this.client.readPublic<SearchHit>('search_tokens', {
-      $type_slug: LISTING_TYPE_SLUG,
-      $text_keys: textKeys.length > 0 ? textKeys : null,
-      $text_values: textValues.length > 0 ? textValues : null,
-      $limit: limit,
-      $after_created_at: options.after
-        ? asQueryInt(BigInt(Math.floor(options.after.listedAt.getTime() / 1000)))
-        : null,
-      $after_id: options.after ? asQueryInt(options.after.listingId) : null,
-      $type_version: null,
-      $number_keys: numberKeys.length > 0 ? numberKeys : null,
-      $number_mins: numberMins.length > 0 ? numberMins : null,
-      $number_maxs: numberMaxs.length > 0 ? numberMaxs : null,
-      $boolean_keys: booleanKeys.length > 0 ? booleanKeys : null,
-      $boolean_values: booleanValues.length > 0 ? booleanValues : null,
+    const found = await this.client.tokens.search(LISTING_TYPE_SLUG, {
+      text,
+      ranges,
+      booleans,
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      ...(options.after
+        ? { after: { createdAt: options.after.listedAt, tokenId: options.after.listingId } }
+        : {}),
     });
 
-    const ids = found.map((hit) => toUnits(hit.token_id, 'token_id'));
-    const fields = await this.fieldsFor(ids);
+    // TWO ROUND TRIPS, NOT FOUR (#49). `token_fields` already carries
+    // `custodian_url` per row, so there is no third call for a photo base.
+    const fields = await this.client.tokens.fields(found.map((hit) => hit.tokenId));
 
     /*
-      TWO ROUND TRIPS, NOT FOUR, and the two removed were doing nothing.
-
-      This used to await `photoBase()` here, which resolves the photo custodian
-      through `metadata_field_custodian_endpoint` -- and that first awaits
-      `liveTypeId()`, another call. So a cold grid cost four sequential requests:
-      search_tokens, token_fields, current_type_version, then the endpoint.
-
-      `token_fields` ALREADY CARRIES `custodian_url` PER ROW, resolved from the
-      declaration that governs each record's own type. The fallback was written for
-      `get_token`, which returns the custodian's ids but not its resolved address;
-      it was never needed here and `summaryRowFrom` prefers the row's own value
-      anyway.
-
-      WHY IT MATTERED MORE THAN IT LOOKS. Measured against staging, `SELECT 1`
-      costs the same as a real query -- 0.455s against 0.470s -- so the work is
-      free and the ROUND TRIP is the entire cost. Four of them is about 1.9s before
-      anything paints, where the SELECT this replaced took two. That is the whole
-      of the slowdown, and it is latency rather than the chain being slower.
-
-      A listing with no `photos` row has no url and no photographs to render, so
-      there is nothing for a fallback to rescue.
-    */
-    const base: string | null = null;
-
-    /*
-      EXPIRED RECORDS ARE FILTERED HERE, and that is a real difference from the
-      retired action. `browse_listings` compared expires_at against
-      @block_timestamp on chain; `search_tokens` excludes terminal STATES but
-      knows nothing about deadlines, because a deadline is one directory's
+      EXPIRED RECORDS ARE FILTERED HERE, and that is this directory's business
+      rather than the generic client's. `search_tokens` excludes terminal STATES
+      and knows nothing about deadlines, because a deadline is one directory's
       declared field and not a property of a token. A lapsed record is still
       `active` until the permissionless sweep moves it, so a grid that showed it
       would be advertising something whose term has run out.
@@ -1081,11 +794,10 @@ export class ListingsClient {
     const now = Math.floor(Date.now() / 1000);
     const out: ListingSummary[] = [];
     for (const hit of found) {
-      const id = toUnits(hit.token_id, 'token_id');
-      const f = fields.get(String(id)) ?? new Map<string, FieldRow>();
-      const expires = f.get('expires_at')?.value_datetime;
+      const f = fields.get(String(hit.tokenId)) ?? new Map<string, TokenField>();
+      const expires = f.get('expires_at')?.datetime;
       if (expires !== undefined && expires !== null && Number(expires) <= now) continue;
-      out.push(this.toSummary(summaryRowFrom(hit, f, base)));
+      out.push(this.toSummary(summaryRowFrom(hit, f)));
     }
     return out;
   }
@@ -1099,28 +811,25 @@ export class ListingsClient {
    */
   async mine(options: { limit?: number } = {}): Promise<OwnListing[]> {
     /*
-      `my_tokens` RESOLVES THE CALLER, which this used to do by hand: it joined
-      `person_keys` on `this.client.address` and carried the confirmed/revoked
-      predicates itself. That made the client the owner of the
-      address-normalisation rule -- `WHERE address = lower(@caller)` -- which is
-      the single most repeated trap in this schema and not a client's to keep.
+      `tokens.mine` RESOLVES THE CALLER ON CHAIN, which this used to do by hand:
+      it joined `person_keys` on the address, and that is the one place the
+      address-normalisation rule bites — `WHERE address = lower(@caller)`, because
+      `@caller` for an EVM signer is EIP-55 checksummed while the column is
+      lowercase. A bare comparison matches nothing, silently.
     */
-    const found = await this.client.read<OwnHit>('my_tokens', {
-      $type_slug: LISTING_TYPE_SLUG,
-      $limit: clampLimit(options.limit),
-    });
+    const found = await this.client.tokens.mine(LISTING_TYPE_SLUG, options);
 
     // The seller paid for the term, so this is the page that most needs it.
-    const fields = await this.fieldsFor(found.map((h) => toUnits(h.token_id, 'token_id')));
+    const fields = await this.client.tokens.fields(found.map((hit) => hit.tokenId));
 
     return found.map((hit) => {
-      const f = fields.get(String(toUnits(hit.token_id, 'token_id')));
+      const f = fields.get(String(hit.tokenId));
       return {
-        listingId: toUnits(hit.token_id, 'token_id'),
-        title: asText(hit.name, 'name'),
-        state: asText(hit.state, 'state'),
-        listedAt: toDate(hit.created_at),
-        expiresAt: toOptionalDate(f?.get('expires_at')?.value_datetime ?? null),
+        listingId: hit.tokenId,
+        title: hit.name,
+        state: hit.state,
+        listedAt: hit.createdAt,
+        expiresAt: toOptionalDate(f?.get('expires_at')?.datetime ?? null),
       };
     });
   }
@@ -1168,15 +877,6 @@ export class ListingsClient {
     */
     return await this.client.types.feeTiers(LISTING_TYPE_SLUG);
   }
-}
-
-/** A decimal for an action parameter, where the type can be declared. */
-function decimalString(value: string | number, field: string): string {
-  const text = typeof value === 'number' ? String(value) : value.trim();
-  if (!/^-?\d+(\.\d+)?$/.test(text)) {
-    throw new BranchError(`${field} must be a decimal number, received ${JSON.stringify(value)}`);
-  }
-  return text;
 }
 
 function asActionInt(value: bigint | number): number {

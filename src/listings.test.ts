@@ -153,6 +153,11 @@ function detailRows(detail: Record<string, unknown>): Array<Record<string, unkno
     datatype: f.datatype,
     is_brokered: false,
     custodian_name: detail.contact_via ?? null,
+    // CARRIED THROUGH, because the real `get_token` returns it and has since
+    // badger-cash/branch#122. The fixture dropped it and nothing noticed, because
+    // the detail path used to resolve the photo base from a separate
+    // `metadata_field_custodian_endpoint` call. It does not any more.
+    custodian_url: f.custodian_url,
     value_text: f.value_text,
     value_number: f.value_number,
     value_boolean: f.value_boolean,
