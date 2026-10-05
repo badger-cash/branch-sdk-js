@@ -8,6 +8,7 @@ import { BranchError } from './errors.js';
 import { objectUrl } from './custodians.js';
 
 import type { CreditAmount } from './amount.js';
+import type { FeeTier } from './tokenTypes.js';
 import type { BranchClient } from './client.js';
 
 /**
@@ -213,23 +214,8 @@ export interface SearchOptions extends BrowseOptions {
  * takes a `metadata_schemas` declaration on chain, which is deliberate:
  * repricing is configuration, adding a price point is a product decision.
  */
-export interface FeeTier {
-  /** Days the listing stays active. `mint_token` takes this as `$duration_days`. */
-  readonly durationDays: number;
-  /**
-   * The charge, in whole credits, as `listing_fee` computes it.
-   *
-   * SCALE 0, NOT 10, and the difference is the whole reason this is not a
-   * bare read of the column. The stored rate is `NUMERIC(38,10)`, but
-   * `listing_fee` returns `NUMERIC(78,0)` and the ledger it is charged
-   * against has scale 0 -- so the credited amount is the rate rounded, and
-   * that rounded figure is what a seller must be shown and what their balance
-   * must be compared against. Handing back the scale-10 column would produce
-   * `units` a thousand million times larger than a balance's, and the
-   * comparison would silently pass on an empty account.
-   */
-  readonly fee: CreditAmount;
-}
+// `FeeTier` lives on the types client now (#55). The reasoning above is kept
+// here because it is about this directory's rate card rather than the shape.
 
 export interface CreateListingInput {
   make: string;
@@ -1172,34 +1158,15 @@ export class ListingsClient {
    */
   async fees(): Promise<FeeTier[]> {
     /*
-      `type_fee_tiers` RETURNS THE RATE CARD AS A SET. `listing_fee` answers for
-      ONE term, so a client offering a seller their choices had to read `metadata`
-      and filter for `fee_%d` itself -- which is how this package ended up owning
-      the identifier grammar. The action returns the identifier and the price; the
-      grammar stays here because a regex is the right tool for it, but the rows
-      come from an action rather than a table.
+      DELEGATED. A rate card belongs to a token TYPE rather than to this
+      directory (badger-cash/branch-sdk-js#55): every directory sets its own
+      price to publish, and Government is curated rather than sold at all, so
+      "what does publishing cost here" must be a question every type can answer.
 
-      A tier whose identifier does not parse is skipped rather than guessed at.
+      This stays as the automobile directory's way of asking, supplying its own
+      slug rather than letting the callee assume one.
     */
-    const rows = await this.client.readPublic<{ identifier: unknown; fee: unknown }>(
-      'type_fee_tiers',
-      { $type_slug: LISTING_TYPE_SLUG }
-    );
-
-    const tiers: FeeTier[] = [];
-    for (const row of rows) {
-      const identifier = typeof row.identifier === 'string' ? row.identifier : '';
-      const match = /^fee_(\d+)d$/.exec(identifier);
-      if (!match) continue;
-      tiers.push({
-        durationDays: Number(match[1]),
-        // Rounded to whole credits, as the chain charges them. Dropped by accident
-        // in the move to the action, and the fees tests caught it.
-        fee: roundToWholeCredits(toAmount(row.fee, METADATA_NUMERIC_SCALE, identifier), identifier),
-      });
-    }
-    tiers.sort((a, b) => a.durationDays - b.durationDays);
-    return tiers;
+    return await this.client.types.feeTiers(LISTING_TYPE_SLUG);
   }
 }
 
@@ -1313,18 +1280,3 @@ function parsePhotos(value: unknown, base: unknown): string[] {
  * them. It exists for the first fractional one, which will be set by an admin
  * transaction with no client release attached to it.
  */
-function roundToWholeCredits(rate: CreditAmount, field: string): CreditAmount {
-  if (rate.decimals === 0) return rate;
-  const scale = 10n ** BigInt(rate.decimals);
-  const negative = rate.units < 0n;
-  const magnitude = negative ? -rate.units : rate.units;
-  const whole = magnitude / scale;
-  const remainder = magnitude % scale;
-  // Half away from zero, matching Postgres rather than JavaScript's Math.round,
-  // which breaks ties towards positive infinity and would disagree below zero.
-  const rounded = remainder * 2n >= scale ? whole + 1n : whole;
-  if (rounded < 0n) {
-    throw new BranchError(`${field} is negative, which is not a price`);
-  }
-  return { units: negative ? -rounded : rounded, decimals: 0 };
-}

@@ -168,6 +168,32 @@ export function formatAmount(amount: CreditAmount, options: FormatOptions = {}):
  * String in, bigint out, with no float step -- `parseFloat('0.1') * 100` is
  * 10.000000000000002, and that is the whole reason this exists.
  */
+/**
+ * A rate read off a scale-10 column, as the whole credits the ledger charges.
+ *
+ * MOVED HERE FROM THE LISTINGS CLIENT, because it is amount arithmetic rather
+ * than a directory's business, and every type's fee needs it.
+ *
+ * HALF AWAY FROM ZERO, matching Postgres rather than JavaScript. `Math.round`
+ * breaks ties towards positive infinity and would disagree below zero; the chain
+ * casts to `NUMERIC(78,0)` and that is the rule to reproduce.
+ */
+export function roundToWholeCredits(rate: CreditAmount, field: string): CreditAmount {
+  if (rate.decimals === 0) return rate;
+  const scale = 10n ** BigInt(rate.decimals);
+  const negative = rate.units < 0n;
+  const magnitude = negative ? -rate.units : rate.units;
+  const whole = magnitude / scale;
+  const remainder = magnitude % scale;
+  // Half away from zero, matching Postgres rather than JavaScript's Math.round,
+  // which breaks ties towards positive infinity and would disagree below zero.
+  const rounded = remainder * 2n >= scale ? whole + 1n : whole;
+  if (rounded < 0n) {
+    throw new BranchError(`${field} is negative, which is not a price`);
+  }
+  return { units: negative ? -rounded : rounded, decimals: 0 };
+}
+
 export function parseAmount(text: string, decimals: number): CreditAmount {
   const trimmed = text.trim();
   const match = /^(-?)(\d*)(?:\.(\d*))?$/.exec(trimmed);

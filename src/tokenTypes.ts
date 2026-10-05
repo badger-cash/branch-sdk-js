@@ -1,7 +1,8 @@
-import { toUnits } from './amount.js';
+import { METADATA_NUMERIC_SCALE, roundToWholeCredits, toAmount, toUnits } from './amount.js';
 import { asQueryInt, asText } from './coerce.js';
 import { BranchError } from './errors.js';
 
+import type { CreditAmount } from './amount.js';
 import type { BranchClient } from './client.js';
 
 /*
@@ -62,6 +63,37 @@ export interface DeclaredField {
   /** The custodian named on the DECLARATION, which may name one without brokering. */
   custodianGroupId: number | null;
   custodianPersonId: number | null;
+}
+
+/**
+ * One duration a type sells, and what it costs.
+ *
+ * ADDRESSED BY TYPE, NOT BY THE LISTINGS CLIENT. Each directory sets its own
+ * price to publish, and Government is curated rather than sold at all — so
+ * "what does it cost to publish here" must be a question every type can answer,
+ * not one only the automobile directory can ask.
+ *
+ * The rate is a metadata row on the type — `fee_30d`, `fee_180d` — precisely so
+ * the admin office can reprice by transaction instead of by redeploy. A client
+ * that hardcodes "30 days costs 1 credit" shows the wrong price the day after a
+ * repricing, and the ledger is the only thing that would disagree with it.
+ */
+export interface FeeTier {
+  /** Days the record stays active. `mint_token` takes this as `$duration_days`. */
+  readonly durationDays: number;
+  /**
+   * The charge in WHOLE CREDITS, as the chain computes it.
+   *
+   * SCALE 0, NOT 10, and the difference is the whole reason this is not a bare
+   * read of the column. The stored rate is `NUMERIC(38,10)` but `listing_fee`
+   * returns `NUMERIC(78,0)`, and the ledger it is charged against has scale 0.
+   * Handing back the scale-10 figure produces `units` a thousand million times
+   * larger than a balance's, and the comparison then passes on an empty account.
+   *
+   * That rounding was dropped once during the move to view actions and the fee
+   * tests caught it, which is why it is spelled out here.
+   */
+  readonly fee: CreditAmount;
 }
 
 /** Which version of a family is live, and what it is called. */
@@ -195,5 +227,42 @@ export class TypesClient {
       $type_id: asQueryInt(id),
     });
     return rows.map(fieldFrom);
+  }
+
+  /**
+   * The durations a type sells, cheapest first.
+   *
+   * UNSIGNED, so a seller can be shown what publishing costs before they have
+   * signed anything.
+   *
+   * THE IDENTIFIER GRAMMAR LIVES HERE AND THAT IS DELIBERATE. `fee_identifier`
+   * on chain builds `'fee_' || days || 'd'` but is `PRIVATE VIEW`, so a client
+   * cannot call it; the regex below is its inverse and a regex is the right tool
+   * for that. It says exactly what a tier identifier is rather than matching
+   * with LIKE — `_` is a single-character wildcard, so the obvious `fee_%d` also
+   * matches `feeXd`. A row that does not parse is skipped rather than guessed at.
+   *
+   * A TYPE WITH NO FEE RETURNS AN EMPTY ARRAY, which is not the same as a fee of
+   * zero. Government is curated rather than sold, so "no tiers" is the honest
+   * answer and a caller must be able to tell it from "free".
+   */
+  async feeTiers(family: string): Promise<FeeTier[]> {
+    const rows = await this.client.readPublic<{ identifier: unknown; fee: unknown }>(
+      'type_fee_tiers',
+      { $type_slug: family }
+    );
+
+    const tiers: FeeTier[] = [];
+    for (const row of rows) {
+      const identifier = typeof row.identifier === 'string' ? row.identifier : '';
+      const match = /^fee_(\d+)d$/.exec(identifier);
+      if (!match) continue;
+      tiers.push({
+        durationDays: Number(match[1]),
+        fee: roundToWholeCredits(toAmount(row.fee, METADATA_NUMERIC_SCALE, identifier), identifier),
+      });
+    }
+    tiers.sort((a, b) => a.durationDays - b.durationDays);
+    return tiers;
   }
 }
