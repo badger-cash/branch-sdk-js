@@ -48,6 +48,19 @@ export type {
   SearchOptions,
 } from './listings.js';
 
+export { TokensClient } from './tokens.js';
+export type {
+  BooleanFacet,
+  MintInput,
+  RangeFacet,
+  TextFacet,
+  TokenCursor,
+  TokenField,
+  TokenHit,
+  TokenRecord,
+  TokenSearchOptions,
+} from './tokens.js';
+
 export { IdentityClient } from './identity.js';
 export type { KeyRecord, KeyStatus, Office, Person } from './identity.js';
 
