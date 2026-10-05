@@ -204,12 +204,14 @@ function fieldFrom(row: FieldRow): TokenField {
     datatype: asText(row.datatype, 'datatype'),
     text: asTextOrNull(row.value_text),
     number: asNumberOrNull(row.value_number),
-    boolean: row.value_boolean === null || row.value_boolean === undefined
-      ? null
-      : Boolean(row.value_boolean),
-    datetime: row.value_datetime === null || row.value_datetime === undefined
-      ? null
-      : Number(row.value_datetime),
+    boolean:
+      row.value_boolean === null || row.value_boolean === undefined
+        ? null
+        : Boolean(row.value_boolean),
+    datetime:
+      row.value_datetime === null || row.value_datetime === undefined
+        ? null
+        : Number(row.value_datetime),
     json: asTextOrNull(row.value_json),
     hmacHex: asTextOrNull(row.value_hmac),
     custodianUrl: asTextOrNull(row.custodian_url),
@@ -442,7 +444,9 @@ export class TokensClient {
     for (const [identifier, hmac] of Object.entries(input.brokered ?? {})) {
       if (hmac === undefined) continue;
       if (!/^[0-9a-fA-F]+$/.test(hmac)) {
-        throw new BranchError(`${identifier} commitment must be hex, received ${JSON.stringify(hmac)}`);
+        throw new BranchError(
+          `${identifier} commitment must be hex, received ${JSON.stringify(hmac)}`
+        );
       }
       brokeredKeys.push(identifier);
       brokeredHmacs.push(hmac);

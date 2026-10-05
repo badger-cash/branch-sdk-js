@@ -1220,9 +1220,6 @@ function asActionInt(value: bigint | number): number {
   return asQueryInt(asBig);
 }
 
-
-
-
 /**
  * A LEFT JOIN that found nothing, kept as null rather than raised.
  *

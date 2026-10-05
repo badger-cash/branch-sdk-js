@@ -126,7 +126,9 @@ describe('tokens.search', () => {
     const client = await connect(kwil);
 
     await expect(
-      client.tokens.search('t', { ranges: [{ identifier: 'year', min: '2015; DROP TABLE tokens' }] })
+      client.tokens.search('t', {
+        ranges: [{ identifier: 'year', min: '2015; DROP TABLE tokens' }],
+      })
     ).rejects.toThrow(BranchError);
     expect(kwil.call).not.toHaveBeenCalled();
   });
@@ -158,7 +160,14 @@ describe('tokens.search', () => {
     kwil.call.mockResolvedValue({
       data: {
         result: [
-          { token_id: 12, name: '2018 Toyota Corolla', state: 'active', created_at: 1790680556, type_id: 2, type_version: 1 },
+          {
+            token_id: 12,
+            name: '2018 Toyota Corolla',
+            state: 'active',
+            created_at: 1790680556,
+            type_id: 2,
+            type_version: 1,
+          },
         ],
       },
     });
@@ -185,9 +194,16 @@ describe('tokens.fields', () => {
     // what makes a third call for a photo base unnecessary (#49).
     const kwil = fakeKwil();
     const row = (token: number, identifier: string, text: string | null, url: string | null) => ({
-      token_id: token, identifier, datatype: 'text',
-      value_text: text, value_number: null, value_boolean: null,
-      value_datetime: null, value_json: null, value_hmac: null, custodian_url: url,
+      token_id: token,
+      identifier,
+      datatype: 'text',
+      value_text: text,
+      value_number: null,
+      value_boolean: null,
+      value_datetime: null,
+      value_json: null,
+      value_hmac: null,
+      custodian_url: url,
     });
     kwil.call.mockResolvedValue({
       data: {
@@ -210,14 +226,31 @@ describe('tokens.fields', () => {
 
 describe('tokens.get', () => {
   const head = {
-    token_id: 42, name: '2018 Toyota Corolla', state: 'active', is_terminal: false,
-    type_id: 2, type_slug: 'automobile-listing', type_version: 1, created_at: 1790680556,
-    issuer_person: 'Marianas Motors', issuer_group: null,
+    token_id: 42,
+    name: '2018 Toyota Corolla',
+    state: 'active',
+    is_terminal: false,
+    type_id: 2,
+    type_slug: 'automobile-listing',
+    type_version: 1,
+    created_at: 1790680556,
+    issuer_person: 'Marianas Motors',
+    issuer_group: null,
   };
   const field = (identifier: string, extra: Record<string, unknown>) => ({
-    ...head, identifier, datatype: 'text', value_text: null, value_number: null,
-    value_boolean: null, value_datetime: null, value_json: null, value_hmac: null,
-    custodian_url: null, is_brokered: false, custodian_name: null, ...extra,
+    ...head,
+    identifier,
+    datatype: 'text',
+    value_text: null,
+    value_number: null,
+    value_boolean: null,
+    value_datetime: null,
+    value_json: null,
+    value_hmac: null,
+    custodian_url: null,
+    is_brokered: false,
+    custodian_name: null,
+    ...extra,
   });
 
   it('collapses long format into one record and a field map', async () => {
@@ -227,7 +260,12 @@ describe('tokens.get', () => {
         result: [
           field('make', { value_text: 'toyota' }),
           field('year', { datatype: 'number', value_number: '2018' }),
-          field('contact', { is_brokered: true, value_hmac: 'ab12', custodian_name: 'CNMI Central', custodian_url: 'https://custodian.test' }),
+          field('contact', {
+            is_brokered: true,
+            value_hmac: 'ab12',
+            custodian_name: 'CNMI Central',
+            custodian_url: 'https://custodian.test',
+          }),
         ],
       },
     });
@@ -313,9 +351,19 @@ describe('tokens.mint', () => {
 
     const types = writes[0]?.types as Record<string, unknown>;
     for (const key of [
-      '$text_keys', '$text_values', '$number_keys', '$number_values',
-      '$boolean_keys', '$boolean_values', '$datetime_keys', '$datetime_values',
-      '$json_keys', '$json_values', '$brokered_keys', '$brokered_hmacs', '$quantity',
+      '$text_keys',
+      '$text_values',
+      '$number_keys',
+      '$number_values',
+      '$boolean_keys',
+      '$boolean_values',
+      '$datetime_keys',
+      '$datetime_values',
+      '$json_keys',
+      '$json_values',
+      '$brokered_keys',
+      '$brokered_hmacs',
+      '$quantity',
     ]) {
       expect(types[key], key).toBeDefined();
     }
