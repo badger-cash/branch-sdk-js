@@ -32,10 +32,10 @@ export type { ActionInputs, ActionTypes, ConnectOptions, DataInfo, KwilLike } fr
 export { CreditsClient } from './credits.js';
 export type { CreditEntry, CreditEntryKind, HistoryOptions } from './credits.js';
 
-export { formatAmount, parseAmount, toAmount } from './amount.js';
+export { METADATA_NUMERIC_SCALE, formatAmount, parseAmount, toAmount } from './amount.js';
 export type { CreditAmount, FormatOptions } from './amount.js';
 
-export { LISTING_SCALE, LISTING_TYPE_SLUG, ListingsClient } from './listings.js';
+export { LISTING_TYPE_SLUG, ListingsClient } from './listings.js';
 export type {
   BrowseOptions,
   CreateListingInput,

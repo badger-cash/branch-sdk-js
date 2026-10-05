@@ -15,6 +15,34 @@ import { BranchError } from './errors.js';
  * configured with 0 decimals -- one credit is one dollar -- but nothing here
  * assumes that, because the same ledger carries every currency.
  */
+/**
+ * The scale every numeric metadata value is stored at.
+ *
+ * `metadata.value_number` is **`NUMERIC(38,10)`** — one column shared by every
+ * numeric field of every token type — so a price, a mileage and a year all
+ * arrive at scale 10 whatever directory they belong to.
+ *
+ * NOT A DIRECTORY'S PROPERTY, WHICH IS WHY IT LIVES HERE. This was exported as
+ * `LISTING_SCALE` from the listings client, which read as "the scale a car
+ * listing uses" and invited the conclusion that a second directory would pick
+ * its own. It cannot: `metadata_schemas` declares `identifier`, `datatype`,
+ * `label`, `unique_scope`, `required`, `requires_custodian`, `folded` and
+ * `validation` — no precision and no scale. The value was always right and only
+ * the name was wrong.
+ *
+ * A per-field scale would need a new column on `metadata_schemas` and a decision
+ * about how a narrower scale is enforced against a shared `NUMERIC(38,10)`
+ * column. Nothing has asked for one: no directory in the contracted field sets
+ * needs a precision other than this.
+ *
+ * DISTINCT FROM THE CREDIT LEDGER, which is scale 0. Credits are whole and
+ * `listing_fee` returns `NUMERIC(78,0)`, so a fee read off a scale-10 column has
+ * to be rounded before it is compared against a balance — see the fee tiers,
+ * where handing back the scale-10 figure once produced `units` a thousand
+ * million times too large and a comparison that passed on an empty account.
+ */
+export const METADATA_NUMERIC_SCALE = 10;
+
 export interface CreditAmount {
   /** The raw integer, in the currency's smallest unit. */
   readonly units: bigint;
