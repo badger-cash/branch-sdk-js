@@ -3,10 +3,13 @@ import { BranchError } from './errors.js';
 /*
   Row and parameter coercion shared by every client in this package.
 
-  EXTRACTED FROM listings.ts RATHER THAN COPIED, because `tokens.ts` needs the
-  same three and a second copy of `asQueryInt` is a second place for the
-  MAX_SAFE_INTEGER check to be forgotten. Nothing here is new behaviour; the
-  originals were private to listings.ts and are now imported back into it.
+  EXTRACTED FROM THE DELETED listings.ts RATHER THAN COPIED, because `tokens.ts`
+  needed the same three and a second copy of `asQueryInt` is a second place for
+  the MAX_SAFE_INTEGER check to be forgotten. Nothing here is new behaviour.
+
+  DELIBERATELY NOT EXPORTED. A consumer that needs these should own its own copy
+  rather than depend on this package's internals -- which is what
+  island-nook-directory-45 does in `src/lib/cars.ts`.
 */
 
 /**

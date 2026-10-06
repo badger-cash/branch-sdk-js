@@ -12,7 +12,6 @@ import {
 import { CreditsClient } from './credits.js';
 import { CustodiansClient } from './custodians.js';
 import { IdentityClient } from './identity.js';
-import { ListingsClient } from './listings.js';
 import { TokensClient } from './tokens.js';
 import { TypesClient } from './tokenTypes.js';
 
@@ -163,16 +162,16 @@ export class BranchClient {
   readonly credits: CreditsClient;
   /**
    * Resolving a custodian to an address. Unsigned, because a signed-out
-   * browser has to render listings and their photographs.
+   * browser has to render records and their photographs.
    */
   readonly custodians: CustodiansClient;
-  readonly listings: ListingsClient;
   /**
    * Tokens of any type, addressed by slug.
    *
-   * THE GENERIC SURFACE, and the one a second directory uses. `listings` is the
-   * automobile directory specifically and is becoming an adapter over this
-   * (badger-cash/branch-sdk-js#56).
+   * THE ONLY RECORD SURFACE THIS PACKAGE HAS. There was a `listings` client
+   * beside it, shaped like the automobile directory; it was deleted in 0.7.0 once
+   * its car vocabulary moved to the application that is actually about cars
+   * (badger-cash/island-nook-directory-45#197).
    */
   readonly tokens: TokensClient;
   /**
@@ -199,7 +198,6 @@ export class BranchClient {
     this.custodians = new CustodiansClient(this);
     this.tokens = new TokensClient(this);
     this.types = new TypesClient(this);
-    this.listings = new ListingsClient(this);
   }
 
   static async connect(options: ConnectOptions): Promise<BranchClient> {

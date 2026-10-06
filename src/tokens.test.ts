@@ -34,7 +34,8 @@ const inputsOf = (kwil: ReturnType<typeof fakeKwil>, action: string): Record<str
 describe('tokens.search', () => {
   it('passes a text needle through untouched, because the node folds it', async () => {
     /*
-      THE CORRECTION THIS CLIENT MAKES. `listings.search` lowercases needles. The
+      THE CORRECTION THIS CLIENT MADE. The deleted `listings.search` lowercased
+      needles. The
       node already does it, per declaration:
         m.value_text = CASE WHEN d.folded THEN lower(q.v) ELSE q.v END
       so lowercasing here is redundant for a folded field and WRONG for one

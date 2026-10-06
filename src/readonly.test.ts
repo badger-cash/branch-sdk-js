@@ -87,7 +87,7 @@ describe('connectReadOnly', () => {
     expect(kwil.selectQuery).toHaveBeenCalledOnce();
   });
 
-  it('serves the listings read surface, which is the point', async () => {
+  it('serves the token read surface, which is the point', async () => {
     /*
       UNSIGNED VIEW ACTIONS, and the assertion inverted with #119. This used to
       require two plain SELECTs and NO `call` at all; the read surface is actions
@@ -100,7 +100,11 @@ describe('connectReadOnly', () => {
     const kwil = fakeKwil();
     const client = await BranchClient.connectReadOnly(options(kwil));
 
-    await expect(client.listings.search({ make: 'Toyota' })).resolves.toEqual([]);
+    await expect(
+      client.tokens.search('automobile-listing', {
+        text: [{ identifier: 'make', value: 'Toyota' }],
+      })
+    ).resolves.toEqual([]);
     expect(kwil.call).toHaveBeenCalled();
     for (const args of kwil.call.mock.calls) {
       expect(args).toHaveLength(1);
@@ -108,7 +112,7 @@ describe('connectReadOnly', () => {
     expect(kwil.execute).not.toHaveBeenCalled();
   });
 
-  it('opens a listing, which is a page further in than browse', async () => {
+  it('opens one record, which is a page further in than a search', async () => {
     // This used to say "view actions are signed", which is FALSE: a PUBLIC VIEW
     // action reading no @caller needs no signer (branch#66, kwil-db
     // core/types/message.go:83). What is true is narrower and is this package's
@@ -184,12 +188,14 @@ describe('connectReadOnly', () => {
     });
     const client = await BranchClient.connectReadOnly(options(kwil));
 
-    const listing = await client.listings.get(42);
-    expect(listing?.title).toBe('2018 Toyota Corolla');
-    // The custodian's name, never the commitment.
-    expect(listing?.contactVia).toBe('CNMI Central');
-    expect(listing?.price.units).toBe(127500000000000n);
-    // Reached WITHOUT a signer, which is what lets an anonymous visitor open a car.
+    const record = await client.tokens.get(42);
+    expect(record?.name).toBe('2018 Toyota Corolla');
+    // The custodian's NAME, never the commitment.
+    expect(record?.fields.get('contact')?.custodianName).toBe('CNMI Central');
+    expect(record?.fields.get('contact')?.text).toBeNull();
+    // A NUMERIC arrives as a decimal string of the value, unparsed.
+    expect(record?.fields.get('price')?.number).toBe('12750');
+    // Reached WITHOUT a signer, which is what lets an anonymous visitor open a record.
     for (const args of kwil.call.mock.calls) {
       expect(args).toHaveLength(1);
     }

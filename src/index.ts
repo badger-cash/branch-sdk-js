@@ -35,18 +35,6 @@ export type { CreditEntry, CreditEntryKind, HistoryOptions } from './credits.js'
 export { METADATA_NUMERIC_SCALE, formatAmount, parseAmount, toAmount } from './amount.js';
 export type { CreditAmount, FormatOptions } from './amount.js';
 
-export { LISTING_TYPE_SLUG, ListingsClient } from './listings.js';
-export type {
-  BrowseOptions,
-  CreateListingInput,
-  Listing,
-  ListingOutcome,
-  ListingSummary,
-  OwnListing,
-  PageCursor,
-  SearchOptions,
-} from './listings.js';
-
 export { TypesClient } from './tokenTypes.js';
 export type {
   DeclaredField,

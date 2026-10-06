@@ -22,10 +22,10 @@ import { BranchError } from './errors.js';
  * numeric field of every token type — so a price, a mileage and a year all
  * arrive at scale 10 whatever directory they belong to.
  *
- * NOT A DIRECTORY'S PROPERTY, WHICH IS WHY IT LIVES HERE. This was exported as
- * `LISTING_SCALE` from the listings client, which read as "the scale a car
- * listing uses" and invited the conclusion that a second directory would pick
- * its own. It cannot: `metadata_schemas` declares `identifier`, `datatype`,
+ * NOT A DIRECTORY'S PROPERTY, WHICH IS WHY IT LIVES HERE. It used to be exported
+ * as `LISTING_SCALE` from a car-shaped listings client -- since deleted -- which
+ * read as "the scale a car listing uses" and invited the conclusion that a second
+ * directory would pick its own. It cannot: `metadata_schemas` declares `identifier`, `datatype`,
  * `label`, `unique_scope`, `required`, `requires_custodian`, `folded` and
  * `validation` — no precision and no scale. The value was always right and only
  * the name was wrong.
