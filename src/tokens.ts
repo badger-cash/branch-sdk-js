@@ -10,13 +10,14 @@ import type { BranchClient } from './client.js';
 
   badger-cash/branch#56 stopped the chain knowing what a car is -- a directory
   is a token type created by transaction, its fields are declarations, its
-  lifecycle is a state vocabulary. `listings.ts` has not made that move: it
-  exports one hardcoded slug and names `make`, `model` and `vin` in its own
-  types, so a second directory cannot use this package at all.
+  lifecycle is a state vocabulary. This package carried a `listings.ts` that had
+  not made that move -- one hardcoded slug, `make`, `model` and `vin` in its own
+  types -- so a second directory could not use it at all.
 
   This module is the move. Nothing here knows what a car is; what it knows is
-  what the chain knows. `listings.ts` becomes a thin adapter over it (#56) and
-  the car vocabulary moves to the application that is already about cars.
+  what the chain knows. `listings.ts` became a thin adapter over it (#56) and was
+  deleted in 0.7.0 once its vocabulary reached the application that is actually
+  about cars (badger-cash/island-nook-directory-45#197).
 
   WHAT THIS DELIBERATELY DOES NOT DO, because each is its own sub-issue:
 
@@ -107,7 +108,20 @@ export interface TokenField {
   boolean: boolean | null;
   datetime: number | null;
   json: string | null;
-  /** Set only for a field whose declaration says `requires_custodian`. */
+  /**
+   * The commitment on a brokered field.
+   *
+   * ONLY `token_fields` RETURNS IT. `get_token` does not select `value_hmac` at
+   * all, so this is **always null on a record from `get`** and populated on one
+   * from `fields` — the exact mirror of `custodianName` below, which only
+   * `get_token` returns.
+   *
+   * Found by running the integration suite rather than by reading the action:
+   * the assertion that a `get` exposes the commitment failed, and the action's
+   * RETURNS list is why. Neither asymmetry is worth a second type, because what
+   * each caller needs differs — a detail page wants the custodian's name to show
+   * and has no use for the commitment.
+   */
   hmacHex: string | null;
   /**
    * The custodian's NAME, which is what a page can honestly show for a brokered
@@ -266,7 +280,7 @@ export class TokensClient {
 
     /*
       NEEDLES ARE PASSED THROUGH, NOT LOWERCASED, and this corrects what
-      `listings.search` does.
+      the deleted `listings.search` did.
 
       The node folds the needle itself, per declaration:
       `m.value_text = CASE WHEN d.folded THEN lower(q.v) ELSE q.v END`. So
@@ -537,8 +551,9 @@ export class TokensClient {
   /*
     STATE NAMES ARE PARAMETERS, NOT LITERALS -- badger-cash/branch-sdk-js#53.
 
-    `listings.ts` froze one type's vocabulary into the package: `ACTIVE_STATE`,
-    `MODERATED_STATE` and `ListingOutcome = 'sold' | 'withdrawn'`. An event is
+    The deleted `listings.ts` froze one type's vocabulary into the package:
+    `ACTIVE_STATE`, `MODERATED_STATE` and `ListingOutcome = 'sold' | 'withdrawn'`.
+    An event is
     `cancelled` and a business is `closed`, and neither is expressible that way.
 
     THE CHAIN VALIDATES, SO THIS DOES NOT. `close_token` and `moderate_token`

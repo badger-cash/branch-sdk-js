@@ -89,7 +89,8 @@ describe('types.schema', () => {
 
   it('caches nothing, so a page cannot be pinned to a stale version', async () => {
     /*
-      THIS IS #44. `listings.ts` caches one type id for the client's lifetime,
+      THIS IS #44. The deleted `listings.ts` cached one type id for the client's
+      lifetime,
       which pins a page to whichever version was live when it loaded. A schema is
       fetched once per render rather than once per card, so the call is cheap and
       the staleness is not worth buying.

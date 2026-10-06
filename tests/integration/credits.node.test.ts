@@ -253,18 +253,28 @@ describe('credits client', () => {
       AMOUNT_IS_NUMERIC
     );
 
-    await user.listings.create({
-      make: 'Toyota',
-      model: 'Corolla',
-      year: 2019,
-      price: '9500',
-      priceCurrency: 'credits',
+    /*
+      MINTED THROUGH THE GENERIC SURFACE, with the field identifiers as fixtures
+      of whatever directory this node has. This test is about the STATEMENT the
+      fee appears on, not about cars; the car-shaped client it used to call was
+      deleted in 0.7.0.
+    */
+    const { typeId } = await user.types.current('automobile-listing');
+    await user.tokens.mint({
+      typeId,
+      stateName: 'active',
+      name: '2019 Toyota Corolla',
       durationDays: 30,
-      location: 'Susupe',
-      contactHmacHex: 'a'.repeat(64),
-      vin: `STMT${Date.now().toString(36).toUpperCase()}`,
-      mileage: '80000',
-      description: 'statement probe',
+      text: {
+        make: 'toyota',
+        model: 'corolla',
+        price_currency: 'credits',
+        location: 'Susupe',
+        vin: `STMT${Date.now().toString(36).toUpperCase()}`,
+        description: 'statement probe',
+      },
+      numbers: { price: '9500', year: '2019', mileage: '80000' },
+      brokered: { contact: 'a'.repeat(64) },
     });
 
     const history = await user.credits.history();

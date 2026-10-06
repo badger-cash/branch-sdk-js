@@ -127,7 +127,7 @@ export class CustodiansClient {
  * parses it, and nothing should: the custodian owns its own naming, which is the
  * entire reason the chain stores an identifier instead of a URL.
  *
- * Tolerates a full URL as the key. Listings published before the change to
+ * Tolerates a full URL as the key. Records published before the change to
  * identifiers carry an absolute address, and those still have to render.
  */
 export const objectUrl = (endpoint: CustodianEndpoint | string, key: string): string => {
