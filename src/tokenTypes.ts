@@ -1,5 +1,5 @@
 import { METADATA_NUMERIC_SCALE, roundToWholeCredits, toAmount, toUnits } from './amount.js';
-import { numeric } from './client.js';
+import { boolArray, intArray, intType, numeric, textArray } from './client.js';
 import { asQueryInt, asText, decimalText } from './coerce.js';
 import { BranchError } from './errors.js';
 
@@ -128,6 +128,10 @@ interface FieldRow {
   custodian_person_id: unknown;
 }
 
+/** An INT8 action parameter from either representation a caller holds. */
+const idOf = (value: bigint | number): number =>
+  asQueryInt(typeof value === 'bigint' ? value : BigInt(value));
+
 function toDatatype(value: unknown): FieldDatatype {
   if (
     value === 'text' ||
@@ -163,6 +167,87 @@ function fieldFrom(row: FieldRow): DeclaredField {
     custodianGroupId: toIdOrNull(row.custodian_group_id),
     custodianPersonId: toIdOrNull(row.custodian_person_id),
   };
+}
+
+/*
+  DECLARING A DIRECTORY -- badger-cash/branch-sdk-js#67.
+
+  Everything above reads a type. These create one, which is what makes a second
+  directory configuration in a consuming application rather than a script in the
+  node repository (badger-cash/island-nook-directory-45#186).
+
+  `create_token_type` RETURNS NO ID. `branch/scripts/seed-cars.sh` reads it back
+  with a SELECT on `token_types`; a consumer of this package never SELECTs a chain
+  table, so `create` resolves it through `current()` instead -- which also means
+  the id you get is the one `live_slug` resolves to, rather than whatever a raw
+  query happened to return.
+*/
+
+/** What a token type is, at the moment it is created. */
+export interface CreateTypeInput {
+  /** Canonical lowercase. Becomes the family's `live_slug`. */
+  slug: string;
+  name: string;
+  description: string;
+  /**
+   * The office that may change this type's own configuration.
+   *
+   * Null leaves it with the creating organization's admin office, which is what
+   * a directory normally wants.
+   */
+  governingRoleId?: number | null;
+  /** The office `moderate_token` requires. Null means nobody can take a record down. */
+  moderatingRoleId?: number | null;
+  /**
+   * Who may issue a record.
+   *
+   * `'office'` is the default on chain and the one Government needs -- an issue
+   * with no signing office is refused by CHECK. A classified directory wants
+   * `'person'` or `'either'`.
+   */
+  issuerKind: 'office' | 'person' | 'either';
+  isFungible?: boolean;
+  transferable?: boolean;
+  visibility?: string;
+  /** The state a new record starts in. A type must have at least one. */
+  initialStateName: string;
+  initialStateLabel: string;
+  /** How issuing is paid for, e.g. `'fee'`. */
+  mintPolicy: string;
+}
+
+/** One field a type declares. */
+export interface DeclareFieldInput {
+  identifier: string;
+  datatype: FieldDatatype;
+  label: string;
+  required?: boolean;
+  uniqueScope?: FieldUniqueScope;
+  /** Brokered: the chain stores an HMAC and a custodian, never a value. */
+  brokered?: boolean;
+  /** The custodian for this field. Required when brokered; allowed without it. */
+  custodianGroupId?: number | null;
+  /**
+   * Whether a text value is stored lowercased.
+   *
+   * DECLARE IT OR FILTERS SILENTLY MATCH NOTHING. `make` and `model` fold so a
+   * filter is a bare equality on the lookup index; `location` and `description`
+   * do not. This was an unwritten convention inside one directory's bespoke write
+   * action before badger-cash/branch#56 made it data, which meant a directory
+   * whose author did not know it got filters that matched nothing and errored
+   * nowhere.
+   */
+  folded?: boolean;
+}
+
+/** One state in a type's lifecycle vocabulary. */
+export interface AddStateInput {
+  name: string;
+  label: string;
+  /** Lower sorts first. `mint_token` resolves the lowest non-terminal when handed a null state. */
+  ordinal: number;
+  /** Terminal states are excluded from `search_tokens` and end a record's life. */
+  isTerminal: boolean;
 }
 
 export class TypesClient {
@@ -295,6 +380,164 @@ export class TypesClient {
       },
       // Nothing infers to NUMERIC.
       { $fee: numeric(38, 10) }
+    );
+  }
+
+  /**
+   * Create a token type: a directory.
+   *
+   * RESOLVES THE ID THROUGH `current()`, because `create_token_type` returns
+   * nothing and a consumer of this package never SELECTs a chain table.
+   *
+   * Requires the `create_token_type` permission, which the operating
+   * organization's admin office holds.
+   */
+  async create(input: CreateTypeInput): Promise<TypeVersion> {
+    await this.client.write(
+      'create_token_type',
+      {
+        $slug: input.slug,
+        $name: input.name,
+        $description: input.description,
+        $governing_role_id: input.governingRoleId ?? null,
+        $moderating_role_id: input.moderatingRoleId ?? null,
+        $issuer_kind: input.issuerKind,
+        $is_fungible: input.isFungible ?? false,
+        $transferable: input.transferable ?? false,
+        $visibility: input.visibility ?? 'public',
+        $initial_state_name: input.initialStateName,
+        $initial_state_label: input.initialStateLabel,
+        $mint_policy: input.mintPolicy,
+      },
+      // An INT8 that may be null still needs its type declared; nothing infers.
+      { $governing_role_id: intType, $moderating_role_id: intType }
+    );
+    return await this.current(input.slug);
+  }
+
+  /** Add a state to a type's vocabulary. */
+  async addState(typeId: bigint | number, state: AddStateInput): Promise<string> {
+    return await this.client.write(
+      'add_type_state',
+      {
+        $type_id: idOf(typeId),
+        $name: state.name,
+        $label: state.label,
+        // `token_type_states.ordinal` is INT4, but an action signature CANNOT say
+        // INT4 -- it declares INT8 and casts (branch, gotcha 5).
+        $ordinal: state.ordinal,
+        $is_terminal: state.isTerminal,
+      },
+      { $ordinal: intType }
+    );
+  }
+
+  /**
+   * Declare a type's fields, in one transaction.
+   *
+   * NINE PARALLEL ARRAYS, which is the action's shape: `declare_type_fields`
+   * takes identifiers, datatypes, labels, required, unique scopes, brokered
+   * flags, custodian groups and folded flags, matched by position. Every one is
+   * type-declared, because nothing infers and an empty array infers to `null[]`.
+   *
+   * ONE TRANSACTION FOR ALL OF THEM, deliberately: twenty fields declared
+   * separately would be twenty transactions and the officeholder key can sign
+   * only one at a time (#11).
+   */
+  async declareFields(
+    typeId: bigint | number,
+    fields: readonly DeclareFieldInput[]
+  ): Promise<string> {
+    if (fields.length === 0) {
+      throw new BranchError('declareFields needs at least one field');
+    }
+    return await this.client.write(
+      'declare_type_fields',
+      {
+        $type_id: idOf(typeId),
+        $identifiers: fields.map((f) => f.identifier),
+        $datatypes: fields.map((f) => f.datatype),
+        $labels: fields.map((f) => f.label),
+        $required: fields.map((f) => f.required ?? false),
+        $unique_scopes: fields.map((f) => f.uniqueScope ?? 'none'),
+        $brokered: fields.map((f) => f.brokered ?? false),
+        $custodian_groups: fields.map((f) =>
+          f.custodianGroupId === undefined || f.custodianGroupId === null
+            ? null
+            : asQueryInt(BigInt(f.custodianGroupId))
+        ),
+        $folded: fields.map((f) => f.folded ?? false),
+      },
+      {
+        $identifiers: textArray,
+        $datatypes: textArray,
+        $labels: textArray,
+        $required: boolArray,
+        $unique_scopes: textArray,
+        $brokered: boolArray,
+        $custodian_groups: intArray,
+        $folded: boolArray,
+      }
+    );
+  }
+
+  /**
+   * Attach a validation rule, or a brokered field's structure template.
+   *
+   * TWO MEANINGS, ONE COLUMN. For an ordinary field this is a validation rule.
+   * For a brokered one it is the STRUCTURE TEMPLATE of the plaintext the
+   * custodian holds — and the on-chain value is an HMAC over that structure, so
+   * a template must never be redefined in place. Version it and re-hash, or every
+   * existing commitment silently stops verifying.
+   *
+   * NOTHING ENFORCES A VALIDATION RULE ON WRITE today. It is declarative
+   * metadata, which makes it a UI hint rather than a constraint.
+   */
+  async setFieldValidation(
+    typeId: bigint | number,
+    identifier: string,
+    validation: string
+  ): Promise<string> {
+    return await this.client.write('set_field_validation', {
+      $type_id: idOf(typeId),
+      $identifier: identifier,
+      $validation: validation,
+    });
+  }
+
+  /**
+   * Name the state a lapsed record moves to.
+   *
+   * `expire_token` reads this rather than taking a state, so which state means
+   * "expired" is configuration on the type instead of a caller's choice.
+   */
+  async setExpiryState(typeId: bigint | number, stateName: string): Promise<string> {
+    return await this.client.write('set_type_expiry_state', {
+      $type_id: idOf(typeId),
+      $state_name: stateName,
+    });
+  }
+
+  /** Name the holder that collects this type's fees. */
+  async setFeeHolder(typeId: bigint | number, holderId: bigint | number): Promise<string> {
+    return await this.client.write('set_type_fee_holder', {
+      $type_id: idOf(typeId),
+      $holder_id: idOf(holderId),
+    });
+  }
+
+  /**
+   * Declare a duration the network sells, so a type may price it.
+   *
+   * NETWORK-WIDE RATHER THAN PER TYPE: a term is a duration anybody may charge
+   * for, and `setFee` prices one for a given type. Declaring 30 days once lets
+   * every directory offer it.
+   */
+  async declareFeeDuration(durationDays: bigint | number): Promise<string> {
+    return await this.client.write(
+      'declare_fee_duration',
+      { $duration_days: idOf(durationDays) },
+      { $duration_days: intType }
     );
   }
 }

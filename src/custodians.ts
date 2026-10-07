@@ -1,3 +1,4 @@
+import { asQueryInt } from './coerce.js';
 import { BranchError } from './errors.js';
 
 import type { BranchClient } from './client.js';
@@ -46,6 +47,17 @@ const toEndpoint = (row: EndpointRow | undefined): CustodianEndpoint | null => {
  * calls without a signer. `client.read` would demand one, and nothing here resolves
  * `@caller`, so there is nothing a signature would prove.
  */
+/**
+ * An INT8 action parameter, checked.
+ *
+ * The read paths below use a bare `Number()`, which is fine for an id a caller
+ * just read back off the chain. A WRITE deserves the check: past 2^53 a number
+ * silently loses precision, and a group id that lands on the wrong group is worse
+ * than a refused transaction.
+ */
+const idOf = (value: bigint | number): number =>
+  asQueryInt(typeof value === 'bigint' ? value : BigInt(value));
+
 export class CustodiansClient {
   constructor(private readonly client: BranchClient) {}
 
@@ -73,7 +85,7 @@ export class CustodiansClient {
       only, which is what both 'photos' and 'contact' were. branch#118 made every
       token field the TYPE'S OWN, so that predicate stopped matching and this
       returned null. A null custodian is not an error anywhere: `photo_base` is
-      null, every object key maps to null and is filtered out, and every listing
+      null, every object key maps to null and is filtered out, and every record
       renders zero photographs with nothing reported.
 
       `metadata_field_custodian_endpoint` now takes the type and prefers the type's
@@ -105,15 +117,37 @@ export class CustodiansClient {
     return toEndpoint(rows[0]);
   }
 
+  /*
+    WRITING AN ENDPOINT, not only reading one.
+
+    A directory with photographs and no endpoint renders an EMPTY GRID WITH NO
+    ERROR -- the chain holds object keys and nothing to resolve them against, so
+    every record returns zero photographs and nothing reports a problem. That is
+    not hypothetical; it is why `infra/staging/reset.sh` publishes the endpoint as
+    a step of its own and refuses to finish without it.
+
+    So declaring a directory has to include this, and until now no consumer could.
+  */
+
   /**
-   * Where the photographs attached to listings are served from.
+   * Publish where an organization's custodian answers.
    *
-   * A named convenience because it is the one every browse page needs, and
-   * because 'token'/'photos' as bare strings at a call site invites a typo that
-   * returns null and reads like "the custodian is down".
+   * REQUIRES MANAGE_METADATA in that group, which the group's admin office can
+   * grant itself. The URL is validated on chain, so a malformed one is refused
+   * rather than stored.
    */
-  async forListingPhotos(): Promise<CustodianEndpoint | null> {
-    return this.forField('token', 'photos');
+  async setForGroup(groupId: bigint | number, url: string): Promise<string> {
+    return await this.client.write('set_group_custodian_endpoint', {
+      $group_id: idOf(groupId),
+      $url: url,
+    });
+  }
+
+  /** Withdraw it. Records keep their object keys and lose the address to fetch them from. */
+  async clearForGroup(groupId: bigint | number): Promise<string> {
+    return await this.client.write('clear_group_custodian_endpoint', {
+      $group_id: idOf(groupId),
+    });
   }
 }
 

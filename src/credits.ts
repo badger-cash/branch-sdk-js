@@ -37,7 +37,14 @@ export interface CreditEntry {
    */
   reference: string | null;
   /**
-   * Why the settlement was opened: `credit issuance`, `listing publication`.
+   * Why the settlement was opened: `credit issuance`, `paid mint`.
+   *
+   * THESE ARE THE LITERALS THE CHAIN WRITES, and the second one changed. It was
+   * `listing publication` while `create_listing` opened the settlement;
+   * badger-cash/branch#74 retired that action and the generic `mint_token` writes
+   * `paid mint`, because an action that charges no longer knows it is publishing a
+   * classified ad. The old value is not written anywhere any more, so matching on
+   * it finds nothing.
    *
    * The envelope's own description, and the only field that says what the
    * movement was FOR. Invariant 15 puts a payment and the thing it paid for in
@@ -116,7 +123,7 @@ export class CreditsClient {
 
       This queried `currency_entries` for `c.code = 'credits'`. That was right when
       credits were a currency; branch#89 made them a fungible TOKEN, so every
-      issuance and every listing fee is a `token_transfers` row. A seller who had
+      issuance and every publishing fee is a `token_transfers` row. A seller who had
       bought and spent credits saw a statement missing all of it -- no error, just
       absence, which is the worst shape a money screen can fail in.
 

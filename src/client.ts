@@ -70,6 +70,20 @@ export function numeric(precision: number, scale: number): DataInfo {
  * NUMERIC arrays cannot infer at all, empty or not, for the same reason a
  * scalar NUMERIC cannot: there is no JavaScript value that resolves to it.
  */
+/**
+ * A scalar INT8, for a parameter that may be NULL.
+ *
+ * A NON-NULL NUMBER INFERS FINE AND A NULL ONE DOES NOT, which is the whole
+ * reason this exists. kwil-js resolves a parameter's type from its value, and
+ * `null` falls into the `VarType.NULL` case -- so an optional INT8 like
+ * `create_token_type`'s `$governing_role_id` is sent as a typeless null and the
+ * engine refuses it against a declared INT8.
+ *
+ * `branch/scripts/seed-cars.sh` writes `int8:null` for exactly these, because
+ * the CLI has the same problem and the same answer.
+ */
+export const intType: DataInfo = Utils.DataType.Int;
+
 export const textArray: DataInfo = Utils.DataType.TextArray;
 export const boolArray: DataInfo = Utils.DataType.BooleanArray;
 export const intArray: DataInfo = Utils.DataType.IntArray;

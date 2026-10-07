@@ -43,7 +43,7 @@ describe('custodians', () => {
     const kwil = fakeKwil([{ url: 'https://custodian.test', updated_at: 1789 }]);
     const client = await readOnly(kwil);
 
-    const found = await client.custodians.forListingPhotos();
+    const found = await client.custodians.forField('token', 'photos');
 
     expect(found).toEqual({ url: 'https://custodian.test', updatedAt: 1789n });
     expect(kwil.call).toHaveBeenCalledOnce();
@@ -55,11 +55,11 @@ describe('custodians', () => {
     const kwil = fakeKwil([{ url: 'https://c.test', updated_at: 1 }]);
     const client = await readOnly(kwil);
 
-    await client.custodians.forListingPhotos();
+    await client.custodians.forField('token', 'photos');
 
     /*
       THE ACTION AND ITS INPUTS, which is a stronger contract than the SQL text
-      this used to assert. $type_id is null here because `forListingPhotos` names
+      this used to assert. $type_id is null here because the caller names
       no type -- the action then matches a network-wide declaration only, and a
       caller that knows its type passes it so the type's own declaration wins.
     */
@@ -80,14 +80,14 @@ describe('custodians', () => {
     // three mean "you cannot reach this", and a caller has a field name to
     // report either way.
     const client = await readOnly(fakeKwil([]));
-    expect(await client.custodians.forListingPhotos()).toBeNull();
+    expect(await client.custodians.forField('token', 'photos')).toBeNull();
     expect(await client.custodians.forGroup(1)).toBeNull();
     expect(await client.custodians.forPerson(2)).toBeNull();
   });
 
   it('treats an empty url as no endpoint', async () => {
     const client = await readOnly(fakeKwil([{ url: '', updated_at: 1 }]));
-    expect(await client.custodians.forListingPhotos()).toBeNull();
+    expect(await client.custodians.forField('token', 'photos')).toBeNull();
   });
 
   it('accepts updated_at however INT8 happens to cross', async () => {
@@ -95,7 +95,7 @@ describe('custodians', () => {
     // the SDK's own README is emphatic that nothing infers to a type by itself.
     for (const at of [1789, '1789', 1789n]) {
       const client = await readOnly(fakeKwil([{ url: 'https://c.test', updated_at: at }]));
-      const found = await client.custodians.forListingPhotos();
+      const found = await client.custodians.forField('token', 'photos');
       expect(found?.updatedAt).toBe(1789n);
     }
   });
@@ -105,7 +105,7 @@ describe('custodians', () => {
     // as "the custodian is down", which sends the reader somewhere else
     // entirely.
     const client = await readOnly(fakeKwil([{ url: 'https://c.test', updated_at: {} }]));
-    await expect(client.custodians.forListingPhotos()).rejects.toThrow(BranchError);
+    await expect(client.custodians.forField('token', 'photos')).rejects.toThrow(BranchError);
   });
 });
 

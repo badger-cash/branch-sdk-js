@@ -5,7 +5,7 @@
  * re-exported here; nothing is deep-importable, because `exports` in
  * package.json declares only ".".
  *
- * Credits (#6) and listings (#7) land on top of BranchClient.
+ * Identity, credits, tokens, types and custodians land on top of BranchClient.
  */
 
 export { signerFromPrivyWallet } from './signer.js';
@@ -23,6 +23,7 @@ export {
   fetchChainId,
   intArray,
   NAMESPACE,
+  intType,
   numeric,
   numericArray,
   textArray,
@@ -36,6 +37,7 @@ export { METADATA_NUMERIC_SCALE, formatAmount, parseAmount, toAmount } from './a
 export type { CreditAmount, FormatOptions } from './amount.js';
 
 export { TypesClient } from './tokenTypes.js';
+export type { AddStateInput, CreateTypeInput, DeclareFieldInput } from './tokenTypes.js';
 export type {
   DeclaredField,
   FeeTier,
