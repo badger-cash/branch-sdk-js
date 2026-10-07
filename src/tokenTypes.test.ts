@@ -249,3 +249,210 @@ describe('types.feeTiers', () => {
     for (const args of kwil.call.mock.calls) expect(args).toHaveLength(1);
   });
 });
+
+describe('declaring a directory', () => {
+  const signing = async (version = VERSION) => {
+    const writes: Array<{ name: string; inputs: Record<string, unknown>; types?: unknown }> = [];
+    const kwil = {
+      execute(body: { name: string; inputs: Record<string, unknown>[]; types?: unknown }) {
+        writes.push({ name: body.name, inputs: body.inputs[0] ?? {}, types: body.types });
+        return Promise.resolve({ data: { tx_hash: '0xabc' } });
+      },
+      call: (body: { name: string }) =>
+        Promise.resolve({
+          data: { result: body.name === 'current_type_version' ? version : [] },
+        }),
+      selectQuery: () => Promise.resolve({ data: [] }),
+    };
+    const client = await BranchClient.connect({
+      provider: 'http://example.invalid',
+      chainId: 'test-chain',
+      address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      signer: { signMessage: () => Promise.resolve('0x00') },
+      kwil: kwil as never,
+    });
+    return { client, writes };
+  };
+
+  const TYPE = {
+    slug: 'everyday-item',
+    name: 'Everyday Item',
+    description: 'A classified advertisement for a used good.',
+    issuerKind: 'person' as const,
+    initialStateName: 'active',
+    initialStateLabel: 'Active',
+    mintPolicy: 'fee',
+  };
+
+  it('creates a type and resolves its id through an action, not a SELECT', async () => {
+    /*
+      `create_token_type` RETURNS NOTHING. seed-cars.sh reads the id back with
+      `SELECT id FROM token_types WHERE live_slug = ...`; a consumer of this
+      package never SELECTs a chain table, so this resolves it through
+      `current_type_version` -- which also means the id is the one `live_slug`
+      resolves to rather than whatever a raw query happened to return.
+    */
+    const { client, writes } = await signing();
+
+    const version = await client.types.create(TYPE);
+
+    expect(writes[0]?.name).toBe('create_token_type');
+    expect(version.typeId).toBe(2);
+    expect(version.typeSlug).toBe('automobile-listing');
+  });
+
+  it('declares the nullable INT8s, because a null does not infer', async () => {
+    /*
+      A NON-NULL NUMBER INFERS AND A NULL ONE DOES NOT. kwil-js reads a
+      parameter's type from its value, and `null` falls into the NULL case -- so an
+      omitted `governingRoleId` would be sent typeless and refused against a
+      declared INT8. seed-cars.sh writes `int8:null` for the same reason.
+    */
+    const { client, writes } = await signing();
+
+    await client.types.create(TYPE);
+
+    const types = writes[0]?.types as Record<string, unknown>;
+    expect(types.$governing_role_id).toBeDefined();
+    expect(types.$moderating_role_id).toBeDefined();
+    expect(writes[0]?.inputs.$governing_role_id).toBeNull();
+    expect(writes[0]?.inputs.$moderating_role_id).toBeNull();
+  });
+
+  it('defaults a directory to a non-fungible, untransferable, public record', async () => {
+    // A classified ad is one thing, not a quantity of them, and it is published to
+    // be seen. A caller that wants otherwise says so.
+    const { client, writes } = await signing();
+
+    await client.types.create(TYPE);
+
+    expect(writes[0]?.inputs.$is_fungible).toBe(false);
+    expect(writes[0]?.inputs.$transferable).toBe(false);
+    expect(writes[0]?.inputs.$visibility).toBe('public');
+  });
+
+  it('declares a state ordinal as INT8, because a signature cannot say INT4', async () => {
+    // `token_type_states.ordinal` is INT4 and the parser ACCEPTS `INT4` in a
+    // signature while the engine then refuses the call (branch, gotcha 5). The
+    // action declares INT8 and casts, so this must too.
+    const { client, writes } = await signing();
+
+    await client.types.addState(2, { name: 'sold', label: 'Sold', ordinal: 2, isTerminal: true });
+
+    expect(writes[0]?.name).toBe('add_type_state');
+    expect((writes[0]?.types as Record<string, unknown>).$ordinal).toBeDefined();
+    expect(writes[0]?.inputs.$is_terminal).toBe(true);
+  });
+
+  it('declares every field in one transaction, as nine parallel arrays', async () => {
+    /*
+      ONE TRANSACTION, because the officeholder key can sign only one at a time
+      (#11) and twenty fields declared separately would be twenty.
+
+      NINE ARRAYS MATCHED BY POSITION, every one type-declared: nothing infers,
+      and an empty array infers to `null[]`.
+    */
+    const { client, writes } = await signing();
+
+    await client.types.declareFields(2, [
+      { identifier: 'category', datatype: 'text', label: 'Category', required: true, folded: true },
+      { identifier: 'price', datatype: 'number', label: 'Price', required: true },
+      {
+        identifier: 'contact',
+        datatype: 'json',
+        label: 'Contact',
+        brokered: true,
+        custodianGroupId: 1,
+      },
+    ]);
+
+    const i = writes[0]?.inputs as Record<string, unknown>;
+    expect(writes[0]?.name).toBe('declare_type_fields');
+    expect(i.$identifiers).toEqual(['category', 'price', 'contact']);
+    expect(i.$datatypes).toEqual(['text', 'number', 'json']);
+    expect(i.$required).toEqual([true, true, false]);
+    expect(i.$unique_scopes).toEqual(['none', 'none', 'none']);
+    expect(i.$brokered).toEqual([false, false, true]);
+    expect(i.$custodian_groups).toEqual([null, null, 1]);
+    expect(i.$folded).toEqual([true, false, false]);
+
+    const types = writes[0]?.types as Record<string, unknown>;
+    for (const key of [
+      '$identifiers',
+      '$datatypes',
+      '$labels',
+      '$required',
+      '$unique_scopes',
+      '$brokered',
+      '$custodian_groups',
+      '$folded',
+    ]) {
+      expect(types[key], key).toBeDefined();
+    }
+  });
+
+  it('sends folded as declared rather than leaving it to a convention', async () => {
+    /*
+      DECLARE IT OR FILTERS SILENTLY MATCH NOTHING. `make` and `model` fold so a
+      filter is a bare equality; `location` and `description` do not. This was an
+      unwritten rule inside one directory's own write action before branch#56 made
+      it data, which meant a directory whose author did not know it got filters
+      that matched nothing and errored nowhere.
+    */
+    const { client, writes } = await signing();
+
+    await client.types.declareFields(2, [
+      { identifier: 'make', datatype: 'text', label: 'Make', folded: true },
+      { identifier: 'location', datatype: 'text', label: 'Location' },
+    ]);
+
+    expect(writes[0]?.inputs.$folded).toEqual([true, false]);
+  });
+
+  it('refuses to declare no fields at all', async () => {
+    const { client, writes } = await signing();
+
+    await expect(client.types.declareFields(2, [])).rejects.toThrow(BranchError);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('attaches a validation rule or a brokered structure template', async () => {
+    const { client, writes } = await signing();
+
+    await client.types.setFieldValidation(2, 'contact', '{"$schema":"contact/v1"}');
+
+    expect(writes[0]?.name).toBe('set_field_validation');
+    expect(writes[0]?.inputs).toEqual({
+      $type_id: 2,
+      $identifier: 'contact',
+      $validation: '{"$schema":"contact/v1"}',
+    });
+  });
+
+  it('names the state a lapsed record moves to', async () => {
+    const { client, writes } = await signing();
+
+    await client.types.setExpiryState(2, 'expired');
+
+    expect(writes[0]?.name).toBe('set_type_expiry_state');
+    expect(writes[0]?.inputs).toEqual({ $type_id: 2, $state_name: 'expired' });
+  });
+
+  it('names the holder that collects the fees, and declares a term', async () => {
+    const { client, writes } = await signing();
+
+    await client.types.setFeeHolder(2, 4);
+    await client.types.declareFeeDuration(30);
+
+    expect(writes[0]?.inputs).toEqual({ $type_id: 2, $holder_id: 4 });
+    expect(writes[1]?.name).toBe('declare_fee_duration');
+    expect(writes[1]?.inputs).toEqual({ $duration_days: 30 });
+    // A term is network-wide, so it takes no type.
+    expect(writes[1]?.inputs).not.toHaveProperty('$type_id');
+  });
+
+  it('refuses an id past MAX_SAFE_INTEGER rather than losing precision', async () => {
+    const { client } = await signing();
+    await expect(client.types.setFeeHolder(2, 9007199254740993n)).rejects.toThrow(BranchError);
+  });
+});

@@ -482,3 +482,150 @@ describe('tokens, against a live node', () => {
     await expect(client.tokens.search('no-such-type-here', { limit: 5 })).resolves.toEqual([]);
   });
 });
+
+/*
+  CREATING A DIRECTORY, END TO END, AGAINST A LIVE NODE.
+
+  This is the test the whole generic path exists for: a directory the node has
+  never heard of, declared entirely through this package, then minted into and
+  searched. If it passes, adding a directory needs no script in the node
+  repository and no change to this one.
+
+  TWO CHAIN RULES THIS FOUND, both by failing:
+
+    A FEE-MINTED TYPE NEEDS A GOVERNING ORGANIZATION -- "which is who prices it
+    and nominates where the money goes". It is resolved from `governing_role_id`,
+    or falls back to the group behind `moderating_role_id`. `seed-cars.sh` passes
+    a null governing role and a real moderating one, which is why it works;
+    passing both null is refused.
+
+    `mint_policy` IS ONE OF fee, authorized, open. Not 'free', which is what the
+    first draft of this test used.
+
+  So a consumer creating a priced directory must know a role id, and
+  `identity.myOffices()` is how it finds one -- which is why that is discovered
+  here rather than hardcoded.
+*/
+describe('declaring a new directory against a live node', () => {
+  it('creates one, declares its fields, publishes its custodian, reads it back', async () => {
+    if (!requireNode()) return;
+
+    const operator = await connect(OPERATOR_KEY);
+
+    // DISCOVERED, NOT HARDCODED. A priced directory needs a governing
+    // organization, and an office the caller holds is how a consumer names one.
+    const offices = await operator.identity.myOffices();
+    expect(offices.length, 'the operator holds no office; bootstrap first').toBeGreaterThan(0);
+    const office = offices[0]!;
+
+    const slug = `probe-directory-${Date.now().toString(36)}`;
+    const created = await operator.types.create({
+      slug,
+      name: 'Probe Directory',
+      description: 'A directory created by the integration suite.',
+      moderatingRoleId: Number(office.roleId),
+      issuerKind: 'person',
+      initialStateName: 'active',
+      initialStateLabel: 'Active',
+      mintPolicy: 'fee',
+    });
+    expect(created.typeSlug).toBe(slug);
+    expect(created.typeId).toBeGreaterThan(0);
+
+    await operator.types.addState(created.typeId, {
+      name: 'sold',
+      label: 'Sold',
+      ordinal: 2,
+      isTerminal: true,
+    });
+
+    await operator.types.declareFields(created.typeId, [
+      { identifier: 'headline', datatype: 'text', label: 'Headline', required: true },
+      { identifier: 'probe_category', datatype: 'text', label: 'Category', folded: true },
+      { identifier: 'asking_price', datatype: 'number', label: 'Asking Price', required: true },
+      { identifier: 'negotiable', datatype: 'boolean', label: 'Negotiable' },
+      { identifier: 'probe_serial', datatype: 'text', label: 'Serial', uniqueScope: 'type_active' },
+    ]);
+
+    /*
+      THE CUSTODIAN ENDPOINT, which a directory with photographs cannot do without:
+      the chain holds object keys and nothing to resolve them against, so every
+      record returns zero photographs and nothing reports an error. Publishing it
+      was unreachable from a consumer until now.
+    */
+    await operator.custodians.setForGroup(office.groupId, 'https://probe.invalid/custodian-api');
+    const endpoint = await operator.custodians.forGroup(office.groupId);
+    expect(endpoint?.url).toBe('https://probe.invalid/custodian-api');
+
+    // READ IT BACK THROUGH THE SAME SURFACE A PAGE WOULD USE.
+    const schema = await operator.types.schema(slug);
+    expect(schema.typeId).toBe(created.typeId);
+
+    const byId = new Map(schema.fields.map((f) => [f.identifier, f]));
+    expect(byId.get('headline')?.required).toBe(true);
+    expect(byId.get('asking_price')?.datatype).toBe('number');
+    expect(byId.get('negotiable')?.datatype).toBe('boolean');
+    expect(byId.get('probe_serial')?.uniqueScope).toBe('type_active');
+    expect(byId.get('probe_category')?.label).toBe('Category');
+
+    /*
+      THE SHARED DECLARATIONS CAME TOO, and that is the chain's doing. A field
+      declared at `token_type_id IS NULL` applies to every type, so a directory
+      declaring five fields gets more than five back -- which is exactly why a
+      consumer must not re-implement the precedence rule.
+    */
+    expect(schema.fields.length).toBeGreaterThanOrEqual(5);
+
+    // And its state vocabulary took.
+    const live = await operator.types.current(slug);
+    expect(live.typeVersion).toBe(created.typeVersion);
+  }, 180_000);
+
+  it('mints into a directory it has just created, and finds it by a folded facet', async () => {
+    if (!requireNode()) return;
+
+    const operator = await connect(OPERATOR_KEY);
+    const slug = `probe-mintable-${Date.now().toString(36)}`;
+
+    // `open` rather than `fee`: an unpriced type needs no governing organization,
+    // which keeps this test about minting rather than about offices.
+    const created = await operator.types.create({
+      slug,
+      name: 'Probe Mintable',
+      description: 'Created, declared, minted into and searched.',
+      issuerKind: 'either',
+      initialStateName: 'active',
+      initialStateLabel: 'Active',
+      mintPolicy: 'open',
+    });
+    await operator.types.declareFields(created.typeId, [
+      { identifier: 'headline', datatype: 'text', label: 'Headline', required: true },
+      { identifier: 'probe_category', datatype: 'text', label: 'Category', folded: true },
+    ]);
+
+    await operator.tokens.mint({
+      typeId: created.typeId,
+      stateName: 'active',
+      name: 'A probe record',
+      text: { headline: 'A probe record', probe_category: 'Furniture' },
+    });
+
+    const hits = await operator.tokens.search(slug, { limit: 5 });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.name).toBe('A probe record');
+
+    /*
+      FOLDED, AND THE NODE FOLDS THE NEEDLE. `probe_category` was declared folded,
+      so a MIXED-CASE needle matches a value stored lowercased -- the property a
+      directory gets by declaring it and loses silently by forgetting.
+    */
+    const folded = await operator.tokens.search(slug, {
+      text: [{ identifier: 'probe_category', value: 'FURNITURE' }],
+      limit: 5,
+    });
+    expect(folded).toHaveLength(1);
+
+    const fields = await operator.tokens.fields([hits[0]!.tokenId]);
+    expect(fields.get(String(hits[0]!.tokenId))?.get('probe_category')?.text).toBe('furniture');
+  }, 180_000);
+});
