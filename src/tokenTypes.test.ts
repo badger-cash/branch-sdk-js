@@ -456,3 +456,144 @@ describe('declaring a directory', () => {
     await expect(client.types.setFeeHolder(2, 9007199254740993n)).rejects.toThrow(BranchError);
   });
 });
+
+describe('types.fieldValues', () => {
+  const VALUES = [
+    { identifier: 'make', value_text: 'toyota', n: 4 },
+    { identifier: 'make', value_text: 'honda', n: 3 },
+    { identifier: 'condition', value_text: 'used', n: 10 },
+  ];
+
+  const withValues = (rows: Array<Record<string, unknown>> = VALUES) => ({
+    selectQuery: vi.fn().mockResolvedValue({ data: [] }),
+    call: vi
+      .fn()
+      .mockImplementation((body: { name: string }) =>
+        body.name === 'type_field_values'
+          ? Promise.resolve({ data: { result: rows } })
+          : Promise.resolve({ data: { result: [] } })
+      ),
+    execute: vi.fn(),
+  });
+
+  const inputsOf = (kwil: ReturnType<typeof withValues>): Record<string, unknown> => {
+    const call = kwil.call.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'type_field_values'
+    );
+    return (call?.[0] as { inputs: Record<string, unknown> }).inputs;
+  };
+
+  it('asks type_field_values for every identifier in one call', async () => {
+    // ONE CALL, not one per facet. Six would be the per-item round trip
+    // badger-cash/branch-sdk-js#49 removed from the grid, moved to the sidebar.
+    const kwil = withValues();
+    const client = await connect(kwil);
+
+    await client.types.fieldValues('automobile-listing', ['make', 'condition']);
+
+    expect(kwil.call.mock.calls).toHaveLength(1);
+    const inputs = inputsOf(kwil);
+    expect(inputs.$type_slug).toBe('automobile-listing');
+    expect(inputs.$identifiers).toEqual(['make', 'condition']);
+  });
+
+  it('caps the value set by default, and the cap is overridable', async () => {
+    const kwil = withValues();
+    const client = await connect(kwil);
+
+    await client.types.fieldValues('automobile-listing', ['make']);
+    expect(inputsOf(kwil).$max_values).toBe(50);
+
+    const other = withValues();
+    const client2 = await connect(other);
+    await client2.types.fieldValues('automobile-listing', ['make'], { maxValues: 8 });
+    expect(inputsOf(other).$max_values).toBe(8);
+  });
+
+  it('leaves the version unpinned unless asked, as a null rather than a zero', async () => {
+    // search_tokens passes its own the same way: null is "whichever version each
+    // record is", and a 0 would be a version that does not exist.
+    const kwil = withValues();
+    const client = await connect(kwil);
+    await client.types.fieldValues('automobile-listing', ['make']);
+    expect(inputsOf(kwil).$type_version).toBeNull();
+
+    const pinned = withValues();
+    const client2 = await connect(pinned);
+    await client2.types.fieldValues('automobile-listing', ['make'], { typeVersion: 1 });
+    expect(inputsOf(pinned).$type_version).toBe(1);
+  });
+
+  it('groups the values under their own field, in the order returned', async () => {
+    const kwil = withValues();
+    const client = await connect(kwil);
+
+    const byField = await client.types.fieldValues('automobile-listing', ['make', 'condition']);
+
+    expect(byField.get('make')).toEqual([
+      { value: 'toyota', count: 4 },
+      { value: 'honda', count: 3 },
+    ]);
+    expect(byField.get('condition')).toEqual([{ value: 'used', count: 10 }]);
+  });
+
+  it('OMITS a field the chain said nothing about, rather than giving it an empty list', async () => {
+    // THE DISTINCTION THE WHOLE FEATURE TURNS ON. No rows means "more distinct
+    // values than the cap -- render a text input", which is not the same claim as
+    // "this field has no values yet". A caller that conflates them renders an
+    // empty select for `location` and a text input for nothing.
+    const kwil = withValues([{ identifier: 'make', value_text: 'toyota', n: 4 }]);
+    const client = await connect(kwil);
+
+    const byField = await client.types.fieldValues('automobile-listing', ['make', 'location']);
+
+    expect(byField.has('make')).toBe(true);
+    expect(byField.has('location')).toBe(false);
+    expect(byField.get('location')).toBeUndefined();
+  });
+
+  it('never returns a field present and empty', async () => {
+    // The corollary, asserted separately because it is what lets a caller use
+    // `has()` as the whole decision.
+    const kwil = withValues();
+    const client = await connect(kwil);
+
+    const byField = await client.types.fieldValues('automobile-listing', [
+      'make',
+      'condition',
+      'description',
+      'contact',
+    ]);
+
+    for (const [, options] of byField) expect(options.length).toBeGreaterThan(0);
+  });
+
+  it('hands back a folded value exactly as stored, because it is a search needle', async () => {
+    // `make` folds, so the chain holds `toyota`. Prettifying it here would
+    // produce an option that matches nothing when sent back as a filter.
+    const kwil = withValues([{ identifier: 'make', value_text: 'toyota', n: 4 }]);
+    const client = await connect(kwil);
+
+    const byField = await client.types.fieldValues('automobile-listing', ['make']);
+    expect(byField.get('make')?.[0]?.value).toBe('toyota');
+  });
+
+  it('costs no round trip when asked about nothing', async () => {
+    // As tokens.fields() does with no ids: an empty question is answered here.
+    const kwil = withValues();
+    const client = await connect(kwil);
+
+    const byField = await client.types.fieldValues('automobile-listing', []);
+
+    expect(byField.size).toBe(0);
+    expect(kwil.call).not.toHaveBeenCalled();
+  });
+
+  it('reads the count as a number, since it is a tally and not an amount', async () => {
+    const kwil = withValues([{ identifier: 'make', value_text: 'toyota', n: '4' }]);
+    const client = await connect(kwil);
+
+    const byField = await client.types.fieldValues('automobile-listing', ['make']);
+    expect(byField.get('make')?.[0]?.count).toBe(4);
+  });
+});

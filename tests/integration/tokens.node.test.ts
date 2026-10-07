@@ -188,6 +188,101 @@ describe('types, against a live node', () => {
     );
   });
 
+  it('offers facet options read off the live records', async () => {
+    /*
+      ONLY THE NODE HAS THESE. A double would return whatever I believed the
+      grouping to be, which is the failure mode badger-cash/branch#113 was
+      written up for: a test double written from an assumption confirms the
+      assumption.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const byField = await client.types.fieldValues(TYPE_SLUG, ['make', 'condition']);
+
+    const makes = byField.get('make');
+    expect(makes).toBeDefined();
+    expect(makes?.length).toBeGreaterThan(0);
+    // FOLDED, so lowercase, and that is the needle a filter sends back.
+    for (const option of makes ?? []) {
+      expect(option.value).toBe(option.value.toLowerCase());
+      expect(option.count).toBeGreaterThan(0);
+      expect(Number.isInteger(option.count)).toBe(true);
+    }
+  });
+
+  it('withholds a field whose values outnumber the cap, rather than truncating it', async () => {
+    /*
+      THE CAP IS THE FEATURE. At a cap of 1, a field with two or more distinct
+      values must vanish entirely -- not come back with one option, which would
+      be a dropdown where every entry works and the absent ones read as records
+      that do not exist.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const generous = await client.types.fieldValues(TYPE_SLUG, ['make'], { maxValues: 500 });
+    const distinct = generous.get('make')?.length ?? 0;
+    expect(distinct).toBeGreaterThan(1);
+
+    const tight = await client.types.fieldValues(TYPE_SLUG, ['make'], { maxValues: distinct - 1 });
+    expect(tight.has('make')).toBe(false);
+
+    // And exactly at the cap it is still offered, in full.
+    const exact = await client.types.fieldValues(TYPE_SLUG, ['make'], { maxValues: distinct });
+    expect(exact.get('make')?.length).toBe(distinct);
+  });
+
+  it('says nothing about a brokered field, without being told it is brokered', async () => {
+    /*
+      `contact` requires a custodian, so the chain holds an HMAC and no
+      cleartext. Uncapped, so an absence here cannot be the cap doing the work.
+      Nothing in the SDK or the action names this field.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const schema = await client.types.schema(TYPE_SLUG);
+    const brokered = schema.fields.find((f) => f.requiresCustodian);
+    expect(brokered).toBeDefined();
+
+    const byField = await client.types.fieldValues(TYPE_SLUG, [brokered?.identifier ?? 'contact'], {
+      maxValues: 500,
+    });
+    expect(byField.size).toBe(0);
+  });
+
+  it('CANNOT report the chain refusing an unknown family, because a view error is dropped', async () => {
+    /*
+      THIS ASSERTS A LIMITATION, NOT A FEATURE, and it is here so the limitation
+      cannot be discovered twice.
+
+      `type_field_values` refuses an unknown family on chain, by name --
+      badger-cash/branch#128 added that guard precisely so an empty filter set
+      could not be mistaken for "no values yet". The guard works, and the e2e
+      suite in `branch` proves it through the CLI's TEXT output.
+
+      It cannot reach a client. A refused view action answers
+      `{"status":200,"data":{"result":[],"logs":""}}` -- success, no rows, no
+      error field, no message. Probed against this node. So the refusal arrives
+      as an ordinary empty result and nothing can tell the two apart.
+
+      The practical rule, documented in the README: validate the family with
+      `schema()` or `current()`, which DO throw, before trusting an empty answer
+      out of here. The test above for `types.current` is what that relies on.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const byField = await client.types.fieldValues('no-such-family-here', ['make']);
+    expect(byField.size).toBe(0);
+
+    // The validating call, which is the one a caller must actually rely on.
+    await expect(client.types.current('no-such-family-here')).rejects.toThrow(
+      /no-such-family-here/
+    );
+  });
+
   it('gives the rate card in whole credits, cheapest first', async () => {
     /*
       SCALE 0, NOT 10. The stored rate is NUMERIC(38,10) but the ledger is scale
