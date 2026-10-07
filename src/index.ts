@@ -40,6 +40,7 @@ export { TypesClient } from './tokenTypes.js';
 export type { AddStateInput, CreateTypeInput, DeclareFieldInput } from './tokenTypes.js';
 export type {
   DeclaredField,
+  FacetOption,
   FeeTier,
   FieldDatatype,
   FieldUniqueScope,

@@ -307,6 +307,34 @@ Brokered fields are different: the chain returns only the custodian's name, and
 the plaintext comes from the custodian's API. See
 [branch-indexer](https://github.com/badger-cash/branch-indexer).
 
+### A refused read is indistinguishable from an empty one
+
+**An `ERROR()` raised by a view action does not cross the wire.** The node
+answers a refused read with success and nothing in it:
+
+```
+no-such-family-here -> {"status":200,"data":{"result":[],"logs":""}}
+```
+
+HTTP 200, an empty result, empty logs, and no error field. The message the
+action raised is gone, so no client — this SDK included — can tell a refusal
+from a legitimately empty answer. Probed against a running node, not inferred.
+
+This is why `branch`'s e2e suites read refusals from the CLI's **text** output
+rather than its JSON, and it has two consequences worth holding:
+
+- **A read action's own guards cannot protect a caller.** `type_field_values`
+  refuses an unknown family by name on chain, and `types.fieldValues()` still
+  resolves to an empty map. Validate a family with `types.schema()` or
+  `types.current()`, which throw client-side when nothing comes back, and treat
+  a read action's guard as protection for a CLI operator rather than for the app.
+- **An empty result needs a second reason to be trusted.** If a grid or a filter
+  set comes back empty, "the chain refused" and "there is nothing there" look
+  identical, and the difference is usually a typo in a slug.
+
+Writes are not affected: a refused transaction arrives as `ActionFailedError`
+carrying `code` and `log`.
+
 ## Development
 
 ```

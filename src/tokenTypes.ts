@@ -97,6 +97,34 @@ export interface FeeTier {
   readonly fee: CreditAmount;
 }
 
+/**
+ * One option a generated filter can offer for a field.
+ *
+ * badger-cash/branch-sdk-js#70.
+ */
+export interface FacetOption {
+  /**
+   * The stored value, AND THE NEEDLE A FILTER SENDS BACK -- which is why it is
+   * handed over exactly as the chain holds it.
+   *
+   * A folded field is stored lowercase, so `make` yields `toyota` and not
+   * `Toyota`. Title-casing it for display is the caller's business; sending the
+   * prettified form back as a search needle would match nothing.
+   */
+  readonly value: string;
+  /** How many live records carry it. A count, not a ledger amount. */
+  readonly count: number;
+}
+
+/**
+ * How many distinct values a field may have and still be offered as a select.
+ *
+ * A judgement about dropdowns rather than about data: past about this many, a
+ * select stops being a way to narrow anything and a text input is the better
+ * control. Overridable per call, and the chain enforces its own ceiling of 500.
+ */
+const DEFAULT_MAX_FACET_VALUES = 50;
+
 /** Which version of a family is live, and what it is called. */
 export interface TypeVersion {
   typeId: number;
@@ -313,6 +341,89 @@ export class TypesClient {
       $type_id: asQueryInt(id),
     });
     return rows.map(fieldFrom);
+  }
+
+  /**
+   * What values a family's live records actually carry, for the fields asked about.
+   *
+   * WHERE A GENERATED SELECT GETS ITS OPTIONS. `schema()` says a field is text
+   * and therefore wants a select; nothing in a declaration says what belongs in
+   * one. `badger-cash/branch#128` settled that by reading the options off the
+   * stored data, so they cannot drift from it -- they are it.
+   *
+   * AN ABSENT KEY IS THE ANSWER, NOT A GAP, and this is the one thing a caller
+   * has to get right. The chain returns nothing at all for a field with more
+   * distinct values than `maxValues`, which means "too many to be a dropdown --
+   * render a text input". `bodystyle` has eight values; `location` has about as
+   * many as there are listings, and a select of two thousand locations is not a
+   * filter. So the control follows the data rather than an author's guess about
+   * it.
+   *
+   * A field is therefore either present with at least one option, or absent. It
+   * is never present and empty, and treating absent as "no values yet" gets both
+   * cases backwards: an empty select for `location`, a text input for nothing.
+   *
+   * The whole value set is withheld rather than truncated, deliberately: a
+   * half-populated dropdown is worse than a text box, because every option in it
+   * works and the missing ones read as records that do not exist.
+   *
+   * FIELDS THAT CANNOT BE FACETED SIMPLY DO NOT APPEAR -- a number, a boolean, a
+   * json field, and a brokered one, which holds an HMAC and no cleartext. None
+   * of them is named or excluded anywhere; they have no public text value to
+   * group, so they fall out. Asking about them is harmless.
+   *
+   * MANY FIELDS IN ONE CALL, and a filter set should use one call. Six separate
+   * ones would be the per-item round trip badger-cash/branch-sdk-js#49 removed
+   * from the grid, relocated to the sidebar, where it is no more affordable.
+   *
+   * No identifiers means no round trip, as with `tokens.fields()`.
+   *
+   * AN UNKNOWN FAMILY COMES BACK EMPTY RATHER THAN THROWING, and that is a
+   * property of the transport rather than a choice made here. The action refuses
+   * an unknown family by name on chain, but a view action's `ERROR()` does not
+   * cross the wire -- the node answers `status 200` with no rows, no logs and no
+   * error field -- so a refusal and an empty answer are the same bytes. Validate
+   * the family with `schema()` or `current()`, which throw client-side when
+   * nothing comes back. See the README.
+   */
+  async fieldValues(
+    family: string,
+    identifiers: readonly string[],
+    options: { maxValues?: number; typeVersion?: number } = {}
+  ): Promise<Map<string, FacetOption[]>> {
+    const byField = new Map<string, FacetOption[]>();
+    if (identifiers.length === 0) return byField;
+
+    const rows = await this.client.readPublic<{
+      identifier: unknown;
+      value_text: unknown;
+      n: unknown;
+    }>('type_field_values', {
+      $type_slug: family,
+      $identifiers: [...identifiers],
+      $max_values: options.maxValues ?? DEFAULT_MAX_FACET_VALUES,
+      // Nullable, and passed the way search_tokens passes its own: null is
+      // "whichever version each record is", not "version zero".
+      $type_version: options.typeVersion ?? null,
+    });
+
+    for (const row of rows) {
+      const identifier = asText(row.identifier, 'identifier');
+      const option: FacetOption = {
+        value: asText(row.value_text, 'value_text'),
+        // A COUNT, SO A NUMBER. Amount discipline is for ledger figures; this is
+        // how many records carry a value, and it crosses as a checked INT8.
+        count: Number(asQueryInt(BigInt(String(row.n)))),
+      };
+      const existing = byField.get(identifier);
+      if (existing === undefined) {
+        byField.set(identifier, [option]);
+      } else {
+        existing.push(option);
+      }
+    }
+
+    return byField;
   }
 
   /**
