@@ -211,6 +211,86 @@ describe('types, against a live node', () => {
     }
   });
 
+  it('narrows one field by another, which only the node can answer', async () => {
+    /*
+      A DEPENDENT FACET (branch#133). Unnarrowed this is every model in the
+      family; narrowed by a make it is that make's models. A double would return
+      whichever I believed, and co-occurrence is exactly what I could not check
+      by reading.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const all = await client.types.fieldValues(TYPE_SLUG, ['model'], { maxValues: 500 });
+    const everyModel = all.get('model') ?? [];
+    /*
+      A PRECONDITION THAT SAYS SO. This needs the seeded fixture -- several makes
+      with several models each -- and without it the assertion below fails as
+      `expected 1 to be greater than 1`, which names neither the seed nor the
+      chain. It read as the narrowing being broken when the chain had simply been
+      reset under an e2e suite that mints one car of its own.
+    */
+    if (everyModel.length < 2) {
+      throw new Error(
+        `this test needs the seeded fixture: the chain has ${everyModel.length} distinct ` +
+          `'model' value(s). Run 'npm run stack:seed' in island-nook-directory-45.`
+      );
+    }
+    expect(everyModel.length).toBeGreaterThan(1);
+
+    const makes = await client.types.fieldValues(TYPE_SLUG, ['make'], { maxValues: 500 });
+    const firstMake = makes.get('make')?.[0]?.value;
+    expect(firstMake).toBeDefined();
+
+    const narrowed = await client.types.fieldValues(TYPE_SLUG, ['model'], {
+      maxValues: 500,
+      narrowBy: [{ identifier: 'make', value: firstMake ?? '' }],
+    });
+    const some = narrowed.get('model') ?? [];
+    expect(some.length).toBeGreaterThan(0);
+    // A proper subset, as long as the directory has more than one make.
+    expect(some.length).toBeLessThan(everyModel.length);
+    for (const option of some) {
+      expect(everyModel.map((o) => o.value)).toContain(option.value);
+    }
+  });
+
+  it('folds a needle per declaration rather than blanket, which is the silent case', async () => {
+    /*
+      THE PAIR THAT MATTERS. `make` is declared folded, so an upper-case needle
+      still matches. An unfolded field must match only the case it was stored in.
+      A blanket lowercase passes the first and silently fails the second --
+      returning nothing and reporting success.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const makes = await client.types.fieldValues(TYPE_SLUG, ['make'], { maxValues: 500 });
+    const stored = makes.get('make')?.[0]?.value ?? '';
+    expect(stored).toBe(stored.toLowerCase());
+
+    const upper = await client.types.fieldValues(TYPE_SLUG, ['model'], {
+      narrowBy: [{ identifier: 'make', value: stored.toUpperCase() }],
+    });
+    expect((upper.get('model') ?? []).length).toBeGreaterThan(0);
+
+    // An unfolded value found from the data rather than named: one whose stored
+    // form is not already lowercase can only be unfolded.
+    const places = await client.types.fieldValues(TYPE_SLUG, ['location'], { maxValues: 500 });
+    const mixed = (places.get('location') ?? []).find((o) => o.value !== o.value.toLowerCase());
+    if (mixed === undefined) return;
+
+    const right = await client.types.fieldValues(TYPE_SLUG, ['make'], {
+      narrowBy: [{ identifier: 'location', value: mixed.value }],
+    });
+    expect((right.get('make') ?? []).length).toBeGreaterThan(0);
+
+    const wrong = await client.types.fieldValues(TYPE_SLUG, ['make'], {
+      narrowBy: [{ identifier: 'location', value: mixed.value.toLowerCase() }],
+    });
+    expect(wrong.size).toBe(0);
+  });
+
   it('withholds a field whose values outnumber the cap, rather than truncating it', async () => {
     /*
       THE CAP IS THE FEATURE. At a cap of 1, a field with two or more distinct
