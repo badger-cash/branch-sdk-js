@@ -589,6 +589,48 @@ describe('types.fieldValues', () => {
     expect(kwil.call).not.toHaveBeenCalled();
   });
 
+  it('sends no narrowing unless asked, as nulls rather than empty arrays', async () => {
+    // An empty array infers to null[] and is refused, so an empty narrowing has
+    // to cross as null -- which the action reads as no narrowing.
+    const kwil = withValues();
+    const client = await connect(kwil);
+    await client.types.fieldValues('automobile-listing', ['model']);
+    expect(inputsOf(kwil).$text_keys).toBeNull();
+    expect(inputsOf(kwil).$text_values).toBeNull();
+
+    const empty = withValues();
+    const client2 = await connect(empty);
+    await client2.types.fieldValues('automobile-listing', ['model'], { narrowBy: [] });
+    expect(inputsOf(empty).$text_keys).toBeNull();
+  });
+
+  it('pairs narrowing keys and values by position', async () => {
+    const kwil = withValues();
+    const client = await connect(kwil);
+    await client.types.fieldValues('automobile-listing', ['model'], {
+      narrowBy: [
+        { identifier: 'make', value: 'toyota' },
+        { identifier: 'body_style', value: 'sedan' },
+      ],
+    });
+    expect(inputsOf(kwil).$text_keys).toEqual(['make', 'body_style']);
+    expect(inputsOf(kwil).$text_values).toEqual(['toyota', 'sedan']);
+  });
+
+  it('DOES NOT LOWERCASE A NEEDLE, because the node folds per declaration', async () => {
+    /*
+      `location` is declared unfolded, so a lowercased 'garapan' would never
+      match the stored 'Garapan' -- and it would return no rows while reporting
+      success. The one transformation this must not make.
+    */
+    const kwil = withValues();
+    const client = await connect(kwil);
+    await client.types.fieldValues('automobile-listing', ['make'], {
+      narrowBy: [{ identifier: 'location', value: 'Garapan' }],
+    });
+    expect(inputsOf(kwil).$text_values).toEqual(['Garapan']);
+  });
+
   it('reads the count as a number, since it is a tally and not an amount', async () => {
     const kwil = withValues([{ identifier: 'make', value_text: 'toyota', n: '4' }]);
     const client = await connect(kwil);

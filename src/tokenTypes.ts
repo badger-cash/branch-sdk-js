@@ -5,6 +5,7 @@ import { BranchError } from './errors.js';
 
 import type { CreditAmount } from './amount.js';
 import type { BranchClient } from './client.js';
+import type { TextFacet } from './tokens.js';
 
 /*
   WHAT A TYPE DECLARES: the keystone of badger-cash/branch-sdk-js#46.
@@ -389,10 +390,40 @@ export class TypesClient {
   async fieldValues(
     family: string,
     identifiers: readonly string[],
-    options: { maxValues?: number; typeVersion?: number } = {}
+    options: {
+      maxValues?: number;
+      typeVersion?: number;
+      /**
+       * Only count values on records that already match these.
+       *
+       * A DEPENDENT FACET -- "which models does this make actually have".
+       * badger-cash/branch#133. Without it this action answers each identifier
+       * independently, so a buyer who picks a make is offered models no car of
+       * that make has, and picking one returns an empty grid.
+       *
+       * Spelled as `tokens.search` spells a needle, so the two filtering
+       * surfaces agree. Omitted means unnarrowed, which is what every caller
+       * before #73 gets.
+       */
+      narrowBy?: readonly TextFacet[];
+    } = {}
   ): Promise<Map<string, FacetOption[]>> {
     const byField = new Map<string, FacetOption[]>();
     if (identifiers.length === 0) return byField;
+
+    /*
+      PAIRED BY POSITION, and the action refuses unequal lengths rather than
+      quietly dropping the last needle -- which would return MORE than was asked
+      for, and read as the filter not working rather than as a bad call.
+
+      VALUES GO AS DECLARED. The node folds each needle according to the field's
+      own declaration: `make` is folded so `TOYOTA` matches, `location` is not so
+      `garapan` must not. Folding here is redundant for the first and WRONG for
+      the second.
+    */
+    const narrowing = options.narrowBy ?? [];
+    const keys = narrowing.map((facet) => facet.identifier);
+    const values = narrowing.map((facet) => facet.value);
 
     const rows = await this.client.readPublic<{
       identifier: unknown;
@@ -405,6 +436,10 @@ export class TypesClient {
       // Nullable, and passed the way search_tokens passes its own: null is
       // "whichever version each record is", not "version zero".
       $type_version: options.typeVersion ?? null,
+      // An empty array infers to null[] and is refused, so no narrowing is sent
+      // as null -- which the action reads as no narrowing.
+      $text_keys: keys.length > 0 ? keys : null,
+      $text_values: values.length > 0 ? values : null,
     });
 
     for (const row of rows) {
