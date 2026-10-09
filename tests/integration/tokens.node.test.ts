@@ -133,6 +133,119 @@ const mintInput = (typeId: number, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+describe('balances and states, against a live node', () => {
+  // The seeded seller: a fixed public key, see island-nook's scripts/stack/seed.mjs.
+  const SELLER = '0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a';
+
+  it('reads a credit balance for an address that is not the caller', async () => {
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const held = await client.credits.balanceOf(SELLER);
+    expect(held.units).toBeGreaterThan(0n);
+    expect(held.decimals).toBe(0);
+  });
+
+  it('FOLDS A MIXED-CASE ADDRESS, which a client-side lower() would mask', async () => {
+    /*
+      THE TRAP THIS EXISTS TO CATCH. `person_keys.address` is lowercase and an
+      EIP-55 address is mixed case, so a bare comparison matches nothing AND
+      REPORTS SUCCESS. The action folds it; this asserts the action does, rather
+      than asserting that the SDK worked around it.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const lower = await client.credits.balanceOf(SELLER);
+    const upper = await client.credits.balanceOf('0x' + SELLER.slice(2).toUpperCase());
+    expect(upper.units).toBe(lower.units);
+    expect(upper.units).toBeGreaterThan(0n);
+  });
+
+  it('throws for an unregistered address rather than answering zero', async () => {
+    // "Nobody" and "nothing" are different answers, and collapsing them is how a
+    // typo'd address reads as an empty wallet.
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    await expect(
+      client.credits.balanceOf('0x0000000000000000000000000000000000000001')
+    ).rejects.toThrow();
+  });
+
+  it('reads one token holding as bare units', async () => {
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    // The credits token is the one fungible token every chain has.
+    const held = await client.tokens.holdingOf(SELLER, 1);
+    expect(typeof held).toBe('bigint');
+    expect(held).toBeGreaterThanOrEqual(0n);
+  });
+
+  it('reads a currency balance by code, and refuses an unknown code', async () => {
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const held = await client.currencies.balanceOf(SELLER, 'demo-usd');
+    expect(held.units).toBeGreaterThanOrEqual(0n);
+
+    /*
+      IT THROWS, BUT NOT WITH THE CHAIN'S MESSAGE. The action says `no currency
+      with the code no-such-currency`; a view action's ERROR() does not cross the
+      wire, so what arrives is zero rows and the SDK's own `returned no row`.
+
+      Asserted as it behaves rather than as it ought to, because the gap is the
+      transport's and pretending otherwise would make this test a fiction.
+    */
+    await expect(client.currencies.balanceOf(SELLER, 'no-such-currency')).rejects.toThrow(
+      /returned no row/
+    );
+  });
+
+  it("lists a type's states in lifecycle order, with the live one first", async () => {
+    /*
+      THE ONE WITH TEETH. close_token and moderate_token take a state NAME, and
+      nothing public listed the names -- so a directory added by definition alone
+      was browsable and not actionable. Read off the chain rather than named here,
+      so it keeps asserting as a directory's lifecycle changes.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const states = await client.types.states(TYPE_SLUG);
+    expect(states.length).toBeGreaterThan(1);
+
+    const first = states[0];
+    expect(first?.isInitial).toBe(true);
+    // Issuance lands here, so by definition it cannot be an ending.
+    expect(first?.isTerminal).toBe(false);
+
+    // Ordinals ascend, which is what "lifecycle order" means.
+    const ordinals = states.map((s) => s.ordinal);
+    expect([...ordinals].sort((a, b) => a - b)).toEqual(ordinals);
+
+    // Exactly one initial state, and at least one ending.
+    expect(states.filter((s) => s.isInitial)).toHaveLength(1);
+    expect(states.some((s) => s.isTerminal)).toBe(true);
+
+    for (const state of states) {
+      expect(state.name).toBe(state.name.toLowerCase());
+      expect(state.label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('refuses an unknown family when listing states', async () => {
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    // The SDK infers the refusal from zero rows -- a live type always declares a
+    // state -- so the family name does reach the caller, via the SDK rather than
+    // the chain.
+    await expect(client.types.states('no-such-family-here')).rejects.toThrow(/no-such-family-here/);
+  });
+});
+
 describe('types, against a live node', () => {
   it('resolves the live version of a family', async () => {
     if (!requireNode()) return;

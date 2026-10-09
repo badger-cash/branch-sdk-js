@@ -118,6 +118,35 @@ export interface FacetOption {
 }
 
 /**
+ * One state a type version declares.
+ *
+ * badger-cash/branch-sdk-js#76.
+ */
+export interface TypeState {
+  /** Canonical lowercase, and what `close_token` and `moderate_token` take. */
+  readonly name: string;
+  readonly label: string;
+  /**
+   * Whether this state ends a record's life.
+   *
+   * THE FIELD A GENERIC PAGE NEEDS, because it tells an ending from a live
+   * state without the client knowing either word. Offer the non-terminal ones
+   * as transitions; label the terminal ones as outcomes.
+   */
+  readonly isTerminal: boolean;
+  /** The declared lifecycle position. Rows arrive in this order. */
+  readonly ordinal: number;
+  /**
+   * Where issuance lands.
+   *
+   * Derived on chain from `ordinal = 1`, which is a CONVENTION the creation
+   * path establishes rather than a constraint the schema enforces. Surfaced so
+   * no client carries that rule.
+   */
+  readonly isInitial: boolean;
+}
+
+/**
  * How many distinct values a field may have and still be offered as a select.
  *
  * A judgement about dropdowns rather than about data: past about this many, a
@@ -510,6 +539,61 @@ export class TypesClient {
    * TAKES A TYPE ID, not a slug, because a reprice must land on a specific
    * version rather than on whichever is live when the transaction arrives.
    */
+  /**
+   * The state vocabulary a type version declares, in lifecycle order.
+   *
+   * WHY THIS IS NOT A CONVENIENCE. `close_token` and `moderate_token` take a
+   * state NAME, and nothing public listed the names. So a directory added by
+   * definition alone was browsable (island-nook#187) and NOT ACTIONABLE: only
+   * an application shipping that directory's definition file could know what to
+   * offer a seller wanting to withdraw, or a moderator wanting to act. Needs
+   * branch#139.
+   *
+   * BY FAMILY AND VERSION, because a client holding a record has its slug and
+   * version from `get_token` and should not need a third lookup to act on it.
+   * Omitting the version means the live one.
+   *
+   * AN UNKNOWN FAMILY THROWS, BUT NOT BECAUSE THE CHAIN SAID SO. The action
+   * refuses by name; a view action's `ERROR()` does not cross the wire, so the
+   * refusal arrives as zero rows. This treats zero rows as the refusal it must
+   * be -- `create_token_type` always inserts a state, so a live family cannot
+   * have none -- and throws with the likely cause rather than handing back an
+   * empty list that reads as "this directory has no lifecycle".
+   *
+   * That inference is available here and is NOT available to `fieldValues`,
+   * where an empty answer is legitimate. The difference is whether zero rows
+   * can mean something true. See the README.
+   */
+  async states(family: string, typeVersion?: number): Promise<TypeState[]> {
+    const rows = await this.client.readPublic<{
+      state_name: unknown;
+      label: unknown;
+      is_terminal: unknown;
+      ordinal: unknown;
+      is_initial: unknown;
+    }>('type_states', {
+      $type_slug: family,
+      $type_version: typeVersion ?? null,
+    });
+    if (rows.length === 0) {
+      throw new BranchError(
+        `no states for '${family}'${typeVersion === undefined ? '' : ` v${String(typeVersion)}`}` +
+          ' -- a live type always declares at least one, so the family or version is' +
+          " probably unknown. The chain's own message cannot reach a client: a view" +
+          " action's ERROR() does not cross the wire."
+      );
+    }
+    return rows.map((row) => ({
+      name: asText(row.state_name, 'state_name'),
+      label: asText(row.label, 'label'),
+      isTerminal: row.is_terminal === true,
+      // INT8, so a checked number rather than a bigint: an ordinal is a
+      // position in a list, not a ledger amount.
+      ordinal: Number(asQueryInt(BigInt(String(row.ordinal)))),
+      isInitial: row.is_initial === true,
+    }));
+  }
+
   async setFee(
     typeId: bigint | number,
     durationDays: bigint | number,

@@ -10,6 +10,7 @@ import {
   parseNodeFailure,
 } from './errors.js';
 import { CreditsClient } from './credits.js';
+import { CurrenciesClient } from './currencies.js';
 import { CustodiansClient } from './custodians.js';
 import { IdentityClient } from './identity.js';
 import { TokensClient } from './tokens.js';
@@ -174,6 +175,7 @@ export async function fetchChainId(provider: string): Promise<string> {
 export class BranchClient {
   readonly identity: IdentityClient;
   readonly credits: CreditsClient;
+  readonly currencies: CurrenciesClient;
   /**
    * Resolving a custodian to an address. Unsigned, because a signed-out
    * browser has to render records and their photographs.
@@ -209,6 +211,7 @@ export class BranchClient {
   ) {
     this.identity = new IdentityClient(this);
     this.credits = new CreditsClient(this);
+    this.currencies = new CurrenciesClient(this);
     this.custodians = new CustodiansClient(this);
     this.tokens = new TokensClient(this);
     this.types = new TypesClient(this);

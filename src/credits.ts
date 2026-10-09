@@ -92,14 +92,56 @@ export class CreditsClient {
    * Served by the `my_credit_balance` action rather than a plain SELECT
    * because it resolves `@caller` through `person_keys` and coalesces a
    * missing balance row to zero -- a registered user who has never been
-   * credited has no row in `currency_balances`, which is not the same as an
-   * error.
+   * credited has no row at all, which is not the same as an error.
+   *
+   * `token_holdings`, NOT `currency_balances`, and this note said the latter
+   * until badger-cash/branch-sdk-js#76. Credits are a fungible TOKEN
+   * (branch#89, branch#124): the action resolves `credit_token_family` and
+   * reads the token ledger. The chain's own `credit_balance` still reads
+   * `currency_balances` and is a currency helper wearing a credits name, which
+   * is why it stays private -- see the note on it in branch's 20-primitives.
    */
   async balance(): Promise<CreditAmount> {
     const rows = await this.client.read<BalanceRow>('my_credit_balance');
     const row = rows[0];
     if (!row) {
       throw new BranchError('my_credit_balance returned no row');
+    }
+    return {
+      units: toUnits(row.amount, 'balance'),
+      decimals: Number(toUnits(row.decimals, 'decimals')),
+    };
+  }
+
+  /**
+   * What any address can spend.
+   *
+   * badger-cash/branch-sdk-js#76. `balance()` resolves `@caller`, so until now
+   * this package could answer what *I* hold and nothing else -- there was no
+   * action behind "what does this address hold", and the one public read that
+   * looked like it could, `currency_balance`, took a holder id nothing public
+   * returned.
+   *
+   * UNSIGNED, like every other read here: a balance is public on chain and
+   * asking about someone else's should not require being someone.
+   *
+   * THE ADDRESS GOES AS GIVEN. `credit_balance_of` folds it with `lower()`
+   * itself, because `person_keys.address` is lowercase while an EIP-55 address
+   * is mixed case -- the single most repeated trap in this schema, and one that
+   * matches nothing while reporting success. Folding here too would be
+   * harmless; relying on it would move the rule into every caller.
+   *
+   * AN UNREGISTERED ADDRESS THROWS, while a registered one with no holding row
+   * returns zero. The two are different answers -- "nobody" and "nothing" --
+   * and collapsing them is how a typo'd address reads as an empty wallet.
+   */
+  async balanceOf(address: string): Promise<CreditAmount> {
+    const rows = await this.client.readPublic<BalanceRow>('credit_balance_of', {
+      $address: address,
+    });
+    const row = rows[0];
+    if (!row) {
+      throw new BranchError('credit_balance_of returned no row');
     }
     return {
       units: toUnits(row.amount, 'balance'),

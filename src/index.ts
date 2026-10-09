@@ -36,6 +36,7 @@ export type { CreditEntry, CreditEntryKind, HistoryOptions } from './credits.js'
 export { METADATA_NUMERIC_SCALE, formatAmount, parseAmount, toAmount } from './amount.js';
 export type { CreditAmount, FormatOptions } from './amount.js';
 
+export { CurrenciesClient } from './currencies.js';
 export { TypesClient } from './tokenTypes.js';
 export type { AddStateInput, CreateTypeInput, DeclareFieldInput } from './tokenTypes.js';
 export type {
@@ -43,6 +44,7 @@ export type {
   FacetOption,
   FeeTier,
   FieldDatatype,
+  TypeState,
   FieldUniqueScope,
   TypeSchema,
   TypeVersion,
