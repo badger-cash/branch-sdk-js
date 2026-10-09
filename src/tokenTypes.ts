@@ -741,6 +741,32 @@ export class TypesClient {
    * `expire_token` reads this rather than taking a state, so which state means
    * "expired" is configuration on the type instead of a caller's choice.
    */
+  /**
+   * Which state a lapsed record moves to, if the type names one.
+   *
+   * THE COUNTERPART TO `setExpiryState`, which has existed without a reader --
+   * `type_expiry_state` is PUBLIC VIEW on chain and nothing here called it.
+   *
+   * WHY A GENERIC PAGE NEEDS IT. `close_token` moves a record INTO a terminal
+   * state, so the transitions to offer a seller are the type's terminal states.
+   * The expiry state is terminal too, and is NOT one of them: it belongs to the
+   * permissionless sweep, not to a seller. Without this read a generated page
+   * offers "mark as expired" beside "mark as sold", which is a transition
+   * nobody should take and the chain would allow.
+   *
+   * NULL WHEN THE TYPE NAMES NONE, which is a real answer: a directory whose
+   * records never lapse has no expiry state, and that is different from one
+   * whose expiry state could not be read.
+   */
+  async expiryState(typeId: bigint | number): Promise<string | null> {
+    const rows = await this.client.readPublic<{ state_name: unknown }>('type_expiry_state', {
+      $type_id: idOf(typeId),
+    });
+    const row = rows[0];
+    if (!row || row.state_name === null || row.state_name === undefined) return null;
+    return asText(row.state_name, 'state_name');
+  }
+
   async setExpiryState(typeId: bigint | number, stateName: string): Promise<string> {
     return await this.client.write('set_type_expiry_state', {
       $type_id: idOf(typeId),

@@ -235,6 +235,31 @@ describe('balances and states, against a live node', () => {
     }
   });
 
+  it("names the expiry state, which is terminal and NOT a seller's to choose", async () => {
+    /*
+      close_token moves a record INTO a terminal state, so the transitions to
+      offer a seller are the terminal ones -- minus this, which belongs to the
+      permissionless sweep. Without this read a generated page offers "mark as
+      expired" beside "mark as sold".
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const { typeId } = await client.types.current(TYPE_SLUG);
+    const expiry = await client.types.expiryState(typeId);
+    expect(expiry).not.toBeNull();
+
+    const states = await client.types.states(TYPE_SLUG);
+    const named = states.find((s) => s.name === expiry);
+    expect(named).toBeDefined();
+    expect(named?.isTerminal).toBe(true);
+
+    // And there is at least one OTHER terminal state, or a seller could close a
+    // record into nothing at all.
+    const sellerMay = states.filter((s) => s.isTerminal && s.name !== expiry);
+    expect(sellerMay.length).toBeGreaterThan(0);
+  });
+
   it('refuses an unknown family when listing states', async () => {
     if (!requireNode()) return;
     const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });

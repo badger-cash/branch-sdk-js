@@ -457,6 +457,44 @@ describe('declaring a directory', () => {
   });
 });
 
+describe('types.expiryState', () => {
+  const withExpiry = (rows: Array<Record<string, unknown>>) => ({
+    selectQuery: vi.fn().mockResolvedValue({ data: [] }),
+    call: vi
+      .fn()
+      .mockImplementation((body: { name: string }) =>
+        body.name === 'type_expiry_state'
+          ? Promise.resolve({ data: { result: rows } })
+          : Promise.resolve({ data: { result: [] } })
+      ),
+    execute: vi.fn(),
+  });
+
+  it('names the state a lapsed record moves to', async () => {
+    const kwil = withExpiry([{ state_name: 'expired' }]);
+    const client = await connect(kwil);
+    await expect(client.types.expiryState(2)).resolves.toBe('expired');
+    const call = kwil.call.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'type_expiry_state'
+    );
+    expect((call?.[0] as { inputs: Record<string, unknown> }).inputs.$type_id).toBe(2);
+  });
+
+  it('is null when the type names none, which is a real answer', async () => {
+    // A directory whose records never lapse has no expiry state, and that is
+    // different from one whose expiry state could not be read.
+    const kwil = withExpiry([{ state_name: null }]);
+    const client = await connect(kwil);
+    await expect(client.types.expiryState(2)).resolves.toBeNull();
+  });
+
+  it('is null when the chain returns nothing at all', async () => {
+    const kwil = withExpiry([]);
+    const client = await connect(kwil);
+    await expect(client.types.expiryState(2)).resolves.toBeNull();
+  });
+});
+
 describe('types.fieldValues', () => {
   const VALUES = [
     { identifier: 'make', value_text: 'toyota', n: 4 },
