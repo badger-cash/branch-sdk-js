@@ -18,14 +18,30 @@ interface Query {
   params: Record<string, unknown>;
 }
 
-async function connect(fixture: Fixture): Promise<{ client: BranchClient; queries: Query[] }> {
+interface Called {
+  name: string;
+  /*
+    `| undefined` explicitly, because exactOptionalPropertyTypes is on: an
+    optional property and one that may hold undefined are different types here,
+    and a recorded call genuinely may have had no inputs.
+  */
+  inputs: Record<string, unknown> | undefined;
+}
+
+async function connect(
+  fixture: Fixture
+): Promise<{ client: BranchClient; queries: Query[]; calls: Called[] }> {
   const queries: Query[] = [];
+  // Recorded so a test can assert the SHAPE of a call -- which action, with
+  // which inputs -- as the tokenTypes suite does.
+  const calls: Called[] = [];
   const kwil: KwilLike = {
     execute(): Promise<{ data?: { tx_hash?: string } }> {
       return Promise.resolve({ data: { tx_hash: '0x00' } });
     },
     call(body): Promise<{ data?: { result?: unknown } }> {
-      if (body.name === 'my_credit_balance') {
+      calls.push({ name: body.name, inputs: body.inputs });
+      if (body.name === 'my_credit_balance' || body.name === 'credit_balance_of') {
         return Promise.resolve({
           data: { result: fixture.balance ? [fixture.balance] : [] },
         });
@@ -64,7 +80,7 @@ async function connect(fixture: Fixture): Promise<{ client: BranchClient; querie
     signer: { signMessage: () => Promise.resolve('0x00') },
     kwil,
   });
-  return { client, queries };
+  return { client, queries, calls };
 }
 
 const ME = { person_id: 4, handle: 'u-abc', display_name: 'Ada', holder_id: 7 };
@@ -80,6 +96,31 @@ describe('balance', () => {
     // not the same as an error and should not read as one.
     const { client } = await connect({ balance: { amount: 0, decimals: 0 } });
     await expect(client.credits.balance()).resolves.toEqual({ units: 0n, decimals: 0 });
+  });
+
+  it('reads a balance for an address that is not the caller', async () => {
+    const { client, calls } = await connect({ balance: { amount: 42, decimals: 0 } });
+    await expect(client.credits.balanceOf('0xAbC')).resolves.toEqual({
+      units: 42n,
+      decimals: 0,
+    });
+    const call = calls.find((c: { name: string }) => c.name === 'credit_balance_of');
+    expect(call).toBeDefined();
+    // THE ADDRESS GOES AS GIVEN. The action folds it with lower(); folding here
+    // would move the rule into every caller and hide it from this test.
+    expect(call?.inputs?.$address).toBe('0xAbC');
+  });
+
+  it('throws when the chain refuses an address, rather than reading zero', async () => {
+    /*
+      A refused view action answers zero rows -- its ERROR() does not cross the
+      wire -- and for a single-row action zero rows can only be a refusal. So
+      this throws, with the SDK's message rather than the chain's.
+    */
+    // No balance fixture at all: the fake answers zero rows, which is what a
+    // refused view action looks like on the wire.
+    const { client } = await connect({});
+    await expect(client.credits.balanceOf('0xNope')).rejects.toThrow(/returned no row/);
   });
 
   it('carries a balance no JS number could hold', async () => {

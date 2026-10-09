@@ -335,6 +335,27 @@ rather than its JSON, and it has two consequences worth holding:
 Writes are not affected: a refused transaction arrives as `ActionFailedError`
 carrying `code` and `log`.
 
+**The shape of the `RETURNS` decides whether you notice.** A refusal is always
+zero rows; what differs is whether zero rows could have meant something true.
+
+| action shape | a refusal arrives as | so |
+|---|---|---|
+| `RETURNS (…)` — one row | zero rows, which the action can never legitimately produce | the SDK throws, with its own message instead of the chain's |
+| `RETURNS TABLE (…)` | zero rows, indistinguishable from an empty answer | the SDK resolves empty, unless an empty answer is itself impossible |
+
+`credits.balanceOf` is the first kind: an unregistered address throws, though
+`credit_balance_of returned no row` rather than
+`no active key registered for 0x…`. `types.states` is the second kind and still
+throws, because `create_token_type` always inserts a state, so a live family
+cannot have none — zero rows can only be a refusal and the SDK says so.
+`types.fieldValues` is the second kind and resolves empty, because a field with
+no values yet is a legitimate answer a new directory genuinely gives.
+
+So the rule for a new read: **ask whether zero rows could ever be the truth.**
+If it could not, infer the refusal and say so. If it could, the caller needs
+another way to tell — which usually means validating the family with
+`types.schema()` or `types.current()` first, both of which throw.
+
 ## Development
 
 ```

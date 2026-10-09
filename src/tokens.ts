@@ -401,6 +401,34 @@ export class TokensClient {
    * repeated on each. It also carries `custodian_url`, which badger-cash/branch#122
    * added precisely so a detail page costs one round trip rather than three.
    */
+  /**
+   * One token's quantity held by an address.
+   *
+   * badger-cash/branch-sdk-js#76. The general case `credits.balanceOf` is a
+   * convenience over: credits are one fungible token among whatever else the
+   * network carries, and a directory's records are tokens too.
+   *
+   * A BARE bigint OF UNITS, not a CreditAmount, because a token's scale belongs
+   * to the token and `token_holding_of` does not return one. Handing back units
+   * is honest; inventing a scale to pair with them would not be.
+   *
+   * Unsigned, and the address goes as given -- the action folds it with
+   * `lower()`. An unregistered address throws; a registered one holding none of
+   * this token returns 0n.
+   */
+  async holdingOf(address: string, tokenId: bigint | number): Promise<bigint> {
+    const id = typeof tokenId === 'bigint' ? tokenId : BigInt(tokenId);
+    const rows = await this.client.readPublic<{ quantity: unknown }>('token_holding_of', {
+      $address: address,
+      $token_id: asQueryInt(id),
+    });
+    const row = rows[0];
+    if (!row) {
+      throw new BranchError('token_holding_of returned no row');
+    }
+    return toUnits(row.quantity, 'quantity');
+  }
+
   async get(tokenId: bigint | number): Promise<TokenRecord | null> {
     const rows = await this.client.readPublic<RecordRow>('get_token', {
       $token_id: idOf(tokenId),
