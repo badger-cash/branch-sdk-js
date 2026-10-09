@@ -203,7 +203,7 @@ describe('balances and states, against a live node', () => {
     );
   });
 
-  it('lists a type\'s states in lifecycle order, with the live one first', async () => {
+  it("lists a type's states in lifecycle order, with the live one first", async () => {
     /*
       THE ONE WITH TEETH. close_token and moderate_token take a state NAME, and
       nothing public listed the names -- so a directory added by definition alone
@@ -242,9 +242,7 @@ describe('balances and states, against a live node', () => {
     // The SDK infers the refusal from zero rows -- a live type always declares a
     // state -- so the family name does reach the caller, via the SDK rather than
     // the chain.
-    await expect(client.types.states('no-such-family-here')).rejects.toThrow(
-      /no-such-family-here/
-    );
+    await expect(client.types.states('no-such-family-here')).rejects.toThrow(/no-such-family-here/);
   });
 });
 
