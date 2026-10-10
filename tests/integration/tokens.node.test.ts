@@ -133,6 +133,110 @@ const mintInput = (typeId: number, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+describe('the reads batch, against a live node', () => {
+  const SELLER = '0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a';
+
+  it('carries the issuer ids, so ownership is a comparison and not a guess', async () => {
+    /*
+      WHAT THIS REPLACES: `issuerPerson` is coalesce(display_name, handle), so
+      deciding "is this mine" meant comparing NAMES -- and two sellers sharing a
+      display name each got the other's withdraw button.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const hits = await client.tokens.search(TYPE_SLUG, { limit: 1 });
+    const first = hits[0];
+    expect(first).toBeDefined();
+
+    const record = await client.tokens.get(first?.tokenId ?? 0n);
+    expect(record).not.toBeNull();
+    // A listing is issued by somebody, so exactly one of the two is set.
+    const ids = [record?.issuerPersonId ?? null, record?.issuerGroupId ?? null];
+    expect(ids.filter((id) => id !== null)).toHaveLength(1);
+    const issuer = record?.issuerPersonId ?? record?.issuerGroupId;
+    expect(Number.isInteger(issuer)).toBe(true);
+  });
+
+  it('answers who may moderate, both ways, and folds the address', async () => {
+    // A check that only ever says yes is not a check, so both directions.
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    // The seeded seller holds no office.
+    await expect(client.types.mayModerate(TYPE_SLUG, SELLER)).resolves.toBe(false);
+
+    // An unregistered address is FALSE, not a throw: "nobody" and "holds no
+    // office" are the same answer to "show the control?".
+    await expect(
+      client.types.mayModerate(TYPE_SLUG, '0x0000000000000000000000000000000000000001')
+    ).resolves.toBe(false);
+
+    // Mixed case must not change the answer for whatever the answer is -- a
+    // client-side lower() would mask the chain failing to fold.
+    const lower = await client.types.mayModerate(TYPE_SLUG, SELLER);
+    const upper = await client.types.mayModerate(TYPE_SLUG, '0x' + SELLER.slice(2).toUpperCase());
+    expect(upper).toBe(lower);
+  });
+
+  it('lists what an address holds, paged contiguously', async () => {
+    /*
+      THE CURSOR IS THE SUBJECT. A row count cannot see a cursor that repeats or
+      skips, so the pages are compared against the unpaged read.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    const all = await client.holdings.of(SELLER, { limit: 200 });
+    expect(all.length).toBeGreaterThan(1);
+
+    // The seeded seller holds credits AND their own listings: one fungible row
+    // among non-fungible ones, which is the profile shape.
+    expect(all.some((h) => h.isFungible)).toBe(true);
+    expect(all.some((h) => !h.isFungible)).toBe(true);
+    for (const held of all) {
+      expect(held.quantity).toBeGreaterThan(0n);
+      expect(typeof held.quantity).toBe('bigint');
+    }
+
+    const page = await client.holdings.of(SELLER, { limit: 2 });
+    expect(page).toHaveLength(2);
+    const next = await client.holdings.of(SELLER, {
+      limit: 2,
+      after: page[1]?.tokenId ?? 0n,
+    });
+    const walked = [...page, ...next].map((h) => h.tokenId);
+    expect(walked).toEqual(all.slice(0, walked.length).map((h) => h.tokenId));
+  });
+
+  it('CANNOT tell an unregistered address from one holding nothing', async () => {
+    /*
+      ASSERTS A LIMITATION, NOT A FEATURE. `holdings_of` refuses an unregistered
+      address by name -- and a view action's ERROR() does not cross the wire, so
+      the refusal arrives as zero rows. For a TABLE action zero rows is also a
+      true answer: a registered address holding nothing. So both come back empty
+      and nothing can separate them.
+
+      This is the third time that rule has caught me, which is why it is written
+      down in the README. `types.states` can infer a refusal because a live type
+      always declares a state; here an empty answer is legitimate, so it cannot.
+
+      A caller needing the difference asks `credits.balanceOf`, a single-row
+      action, which does throw.
+    */
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+
+    await expect(client.holdings.of('0x0000000000000000000000000000000000000001')).resolves.toEqual(
+      []
+    );
+
+    await expect(
+      client.credits.balanceOf('0x0000000000000000000000000000000000000001')
+    ).rejects.toThrow();
+  });
+});
+
 describe('balances and states, against a live node', () => {
   // The seeded seller: a fixed public key, see island-nook's scripts/stack/seed.mjs.
   const SELLER = '0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a';

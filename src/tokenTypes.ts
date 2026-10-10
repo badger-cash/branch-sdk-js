@@ -594,6 +594,38 @@ export class TypesClient {
     }));
   }
 
+  /**
+   * Whether an address may take a record of this type down.
+   *
+   * badger-cash/branch#142. `moderate_token` reads authority from the TYPE --
+   * `burning_role_id` -- and no public action returned it, so a client could ask
+   * whether someone held a role it could not name. The chain answers the
+   * question instead of exposing the id, which keeps the appointment rule and
+   * the address normalisation there rather than in every caller.
+   *
+   * SO THERE IS NOTHING TO INTERPRET HERE. This passes a bool through.
+   *
+   * FALSE RATHER THAN A THROW for an address nobody registered, deliberately
+   * unlike `credits.balanceOf`. There "nobody" and "a balance of zero" are
+   * different answers worth telling apart; here they are the same answer -- an
+   * unregistered address may not moderate, and neither may a registered one
+   * holding no office. A page asking "show the control?" wants one bool, not a
+   * try/catch.
+   *
+   * The address goes as given: the action folds it with `lower()`.
+   */
+  async mayModerate(family: string, address: string): Promise<boolean> {
+    const rows = await this.client.readPublic<{ result: unknown }>('may_moderate', {
+      $type_slug: family,
+      $address: address,
+    });
+    const row = rows[0];
+    if (!row) {
+      throw new BranchError('may_moderate returned no row');
+    }
+    return row.result === true;
+  }
+
   async setFee(
     typeId: bigint | number,
     durationDays: bigint | number,

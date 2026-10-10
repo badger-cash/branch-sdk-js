@@ -457,6 +457,45 @@ describe('declaring a directory', () => {
   });
 });
 
+describe('types.mayModerate', () => {
+  const withAnswer = (rows: Array<Record<string, unknown>>) => ({
+    selectQuery: vi.fn().mockResolvedValue({ data: [] }),
+    call: vi
+      .fn()
+      .mockImplementation((body: { name: string }) =>
+        body.name === 'may_moderate'
+          ? Promise.resolve({ data: { result: rows } })
+          : Promise.resolve({ data: { result: [] } })
+      ),
+    execute: vi.fn(),
+  });
+
+  it('passes the bool through, and the address unfolded', async () => {
+    // The action folds with lower(); folding here would move the rule into every
+    // caller and hide it from this test.
+    const kwil = withAnswer([{ result: true }]);
+    const client = await connect(kwil);
+    await expect(client.types.mayModerate('automobile-listing', '0xAbC')).resolves.toBe(true);
+    const call = kwil.call.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'may_moderate'
+    );
+    const inputs = (call?.[0] as { inputs: Record<string, unknown> }).inputs;
+    expect(inputs.$type_slug).toBe('automobile-listing');
+    expect(inputs.$address).toBe('0xAbC');
+  });
+
+  it('is false when the chain says false, without interpreting it', async () => {
+    const client = await connect(withAnswer([{ result: false }]));
+    await expect(client.types.mayModerate('automobile-listing', '0xAbC')).resolves.toBe(false);
+  });
+
+  it('treats anything that is not true as false', async () => {
+    // A bool arriving as null should not read as permission.
+    const client = await connect(withAnswer([{ result: null }]));
+    await expect(client.types.mayModerate('automobile-listing', '0xAbC')).resolves.toBe(false);
+  });
+});
+
 describe('types.expiryState', () => {
   const withExpiry = (rows: Array<Record<string, unknown>>) => ({
     selectQuery: vi.fn().mockResolvedValue({ data: [] }),
