@@ -37,6 +37,8 @@ export { METADATA_NUMERIC_SCALE, formatAmount, parseAmount, toAmount } from './a
 export type { CreditAmount, FormatOptions } from './amount.js';
 
 export { CurrenciesClient } from './currencies.js';
+export { HoldingsClient } from './holdings.js';
+export type { Holding } from './holdings.js';
 export { TypesClient } from './tokenTypes.js';
 export type { AddStateInput, CreateTypeInput, DeclareFieldInput } from './tokenTypes.js';
 export type {

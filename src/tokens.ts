@@ -150,6 +150,21 @@ export interface TokenRecord {
   /** The issuer's on-chain `display_name` -- the only name a human reads. */
   issuerPerson: string | null;
   issuerGroup: string | null;
+  /**
+   * The issuer's ids, either of which may be the one that matters.
+   *
+   * badger-cash/branch#142. `issuerPerson` is `coalesce(display_name, handle)`
+   * -- a display string with nothing to compare -- so deciding "is this record
+   * mine" meant comparing NAMES, and two sellers sharing a display name each got
+   * the other's withdraw button. The chain refused the write, so it was never a
+   * hole; it was an action offered that could not succeed.
+   *
+   * BOTH, because a person lists their own car and an organization lists on
+   * behalf of its members. Compare against `whoami().personId` for the first;
+   * membership answers the second.
+   */
+  issuerPersonId: number | null;
+  issuerGroupId: number | null;
   fields: Map<string, TokenField>;
 }
 
@@ -212,6 +227,8 @@ interface RecordRow extends FieldRow {
   is_terminal: unknown;
   issuer_person: unknown;
   issuer_group: unknown;
+  issuer_person_id: unknown;
+  issuer_group_id: unknown;
   state: unknown;
   created_at: unknown;
   is_brokered: unknown;
@@ -239,6 +256,21 @@ const asNumberOrNull = (v: unknown): string | null => {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'bigint') return v.toString();
   throw new BranchError(`expected a numeric value, received ${typeof v}`);
+};
+
+/**
+ * An INT8 id that may be absent, as a checked number.
+ *
+ * `String()` on an `unknown` is what eslint rejects and is right to: an object
+ * stringifies to `[object Object]` and would reach BigInt() as garbage. This
+ * accepts only what an id can actually arrive as.
+ */
+const asIdOrNull = (value: unknown, what: string): number | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number(asQueryInt(BigInt(value)));
+  if (typeof value === 'bigint') return Number(asQueryInt(value));
+  if (typeof value === 'string') return Number(asQueryInt(BigInt(value)));
+  throw new BranchError(`${what} is not an id: ${typeof value}`);
 };
 
 const asTextOrNull = (v: unknown): string | null =>
@@ -459,6 +491,10 @@ export class TokensClient {
       createdAt: new Date(Number(head.created_at) * 1000),
       issuerPerson: asTextOrNull(head.issuer_person),
       issuerGroup: asTextOrNull(head.issuer_group),
+      // INT8s, so checked numbers rather than bigints: an id is an identity, not
+      // a ledger amount.
+      issuerPersonId: asIdOrNull(head.issuer_person_id, 'issuer_person_id'),
+      issuerGroupId: asIdOrNull(head.issuer_group_id, 'issuer_group_id'),
       fields,
     };
   }
