@@ -133,6 +133,67 @@ const mintInput = (typeId: number, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+describe('the moderation vocabulary, against a live node', () => {
+  it('round-trips a vocabulary through both methods', async () => {
+    /*
+      ROUND-TRIPPED RATHER THAN READ, because the two halves have to agree about
+      a shape neither owns alone: the chain stores the list delimited with
+      sentinel commas, and this package's job is that no caller ever sees them. A
+      test that only read would pass against a chain storing anything.
+
+      THE CODES HERE ARE A FIXTURE, not a specification. Scope exclusion #1 of
+      PS 26-3155 gives Pacific Pact the moderation rules; these exist so the
+      mechanism can be exercised.
+    */
+    if (!requireNode()) return;
+    const operator = await connect(OPERATOR_KEY);
+    const { typeId } = await operator.types.current(TYPE_SLUG);
+
+    // Mixed case on the way in: the chain declares the field folded.
+    await operator.types.setModerationReasons(typeId, ['Spam', 'prohibited-item', 'misleading']);
+
+    const codes = await operator.types.moderationReasons(TYPE_SLUG);
+    expect(codes).toContain('spam');
+    expect(codes).toContain('prohibited-item');
+    expect(codes.length).toBe(3);
+
+    // NOT A SENTINEL OR AN EMPTY MEMBER ANYWHERE, which is the whole point of
+    // the method rather than a consumer splitting the string.
+    for (const code of codes) {
+      expect(code).not.toBe('');
+      expect(code).not.toContain(',');
+      expect(code).toBe(code.toLowerCase());
+    }
+  });
+
+  it('refuses a code the chain cannot store, rather than storing it badly', async () => {
+    // Underscore is excluded because `_` is a single-character wildcard in the
+    // chain's LIKE membership test: a stored `foo_bar` would match a cited
+    // `fooXbar` and the vocabulary would admit words nobody declared.
+    if (!requireNode()) return;
+    const operator = await connect(OPERATOR_KEY);
+    const { typeId } = await operator.types.current(TYPE_SLUG);
+
+    await expect(operator.types.setModerationReasons(typeId, ['foo_bar'])).rejects.toThrow();
+  });
+
+  it('refuses an empty vocabulary, which would leave the type unmoderatable', async () => {
+    if (!requireNode()) return;
+    const operator = await connect(OPERATOR_KEY);
+    const { typeId } = await operator.types.current(TYPE_SLUG);
+
+    await expect(operator.types.setModerationReasons(typeId, [])).rejects.toThrow();
+  });
+
+  it('refuses an unknown family when reading', async () => {
+    if (!requireNode()) return;
+    const client = await BranchClient.connectReadOnly({ provider: PROVIDER, chainId });
+    await expect(client.types.moderationReasons('no-such-family-here')).rejects.toThrow(
+      /no-such-family-here/
+    );
+  });
+});
+
 describe('the reads batch, against a live node', () => {
   const SELLER = '0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a';
 

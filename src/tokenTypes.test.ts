@@ -496,6 +496,61 @@ describe('types.mayModerate', () => {
   });
 });
 
+describe('types.moderationReasons', () => {
+  const withCodes = (rows: Array<Record<string, unknown>>) => ({
+    selectQuery: vi.fn().mockResolvedValue({ data: [] }),
+    call: vi
+      .fn()
+      .mockImplementation((body: { name: string }) =>
+        body.name === 'type_moderation_reasons'
+          ? Promise.resolve({ data: { result: rows } })
+          : Promise.resolve({ data: { result: [] } })
+      ),
+    execute: vi.fn(),
+  });
+
+  it('STRIPS THE SENTINELS, so no caller ever sees them', async () => {
+    /*
+      The chain stores `,a,b,` on purpose -- membership is
+      LIKE '%,' || code || ',%' and the commas stop `spam` matching `spam-ish`.
+      A consumer splitting it itself would get two empty members, and a
+      vocabulary containing '' renders a blank option that refuses when chosen.
+    */
+    const client = await connect(withCodes([{ codes: ',duplicate,misleading,spam,' }]));
+    await expect(client.types.moderationReasons('automobile-listing')).resolves.toEqual([
+      'duplicate',
+      'misleading',
+      'spam',
+    ]);
+  });
+
+  it('is empty when the type has declared no vocabulary', async () => {
+    // Which means moderation is not available for this type at all --
+    // moderate_token refuses outright rather than falling back to free text.
+    const client = await connect(withCodes([{ codes: null }]));
+    await expect(client.types.moderationReasons('automobile-listing')).resolves.toEqual([]);
+  });
+
+  it('THROWS when there is no row, which can only be a refusal', async () => {
+    /*
+      The action is single-row, so it returns one unless it refused -- and a
+      refusal's message does not cross the wire. A row holding NULL is the type
+      having declared nothing, which is the test above. Collapsing the two turns
+      a typo'd family into "moderation is not available", a sentence a page would
+      show a moderator about a directory that does not exist.
+    */
+    const client = await connect(withCodes([]));
+    await expect(client.types.moderationReasons('automobile-listing')).rejects.toThrow(
+      /probably unknown/
+    );
+  });
+
+  it('survives a single code, where both sentinels touch it', async () => {
+    const client = await connect(withCodes([{ codes: ',spam,' }]));
+    await expect(client.types.moderationReasons('automobile-listing')).resolves.toEqual(['spam']);
+  });
+});
+
 describe('types.expiryState', () => {
   const withExpiry = (rows: Array<Record<string, unknown>>) => ({
     selectQuery: vi.fn().mockResolvedValue({ data: [] }),
