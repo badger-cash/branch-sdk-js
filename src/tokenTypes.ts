@@ -626,6 +626,101 @@ export class TypesClient {
     return row.result === true;
   }
 
+  /**
+   * The codes a takedown of this family may cite.
+   *
+   * badger-cash/branch#144 made a takedown reason a code from a declared
+   * vocabulary rather than free text, because the reason lands in
+   * `token_events.note` -- permanent, replicated to every validator, readable
+   * without authentication -- and free text let a moderator publish a third
+   * party's name and an unproven allegation there forever.
+   *
+   * THE DELIMITED STRING STOPS HERE. The action returns the vocabulary as
+   * stored, `,duplicate,misleading,spam,`, sentinels included. That shape exists
+   * for a reason on chain -- membership is `LIKE '%,' || code || ',%'`, and the
+   * leading and trailing commas are what stop `spam` matching a declared
+   * `spam-ish` -- and no caller should ever see it. A consumer splitting it
+   * itself would have to know about the sentinels, would produce two empty
+   * members if it forgot, and would be reimplementing a detail the chain may
+   * change.
+   *
+   * AN EMPTY ARRAY MEANS MODERATION IS NOT AVAILABLE YET, which is a real answer
+   * rather than a failure: `moderate_token` refuses outright for a type that has
+   * declared no vocabulary, because falling back to free text for an
+   * unconfigured type would reopen the hole for every new directory. A page
+   * should say so rather than render an empty select.
+   */
+  async moderationReasons(family: string, typeVersion?: number): Promise<string[]> {
+    const rows = await this.client.readPublic<{ codes: unknown }>('type_moderation_reasons', {
+      $type_slug: family,
+      $type_version: typeVersion ?? null,
+    });
+    /*
+      ZERO ROWS AND A ROW HOLDING NULL ARE DIFFERENT ANSWERS, and this action
+      makes them distinguishable where most do not.
+      
+      It is single-row -- `RETURNS (codes TEXT)` -- so it always returns one row
+      unless it refused. A refusal's `ERROR()` does not cross the wire and
+      arrives as zero rows, which for a single-row action can mean nothing else.
+      A row holding NULL is the type genuinely having declared no vocabulary.
+      
+      So: no row throws, and a null value is an empty list. Collapsing them --
+      which is what this did first -- turned a typo'd family into "moderation is
+      not available", which is a sentence a page would show a moderator about a
+      directory that does not exist. See the README on asking whether zero rows
+      could ever be the truth.
+    */
+    const row = rows[0];
+    if (!row) {
+      throw new BranchError(
+        `no moderation vocabulary row for '${family}' -- a single-row action returns` +
+          " one unless it refused, and the chain's own message cannot reach a client:" +
+          " a view action's ERROR() does not cross the wire. The family is probably" +
+          ' unknown.'
+      );
+    }
+    const raw = row.codes;
+    if (raw === null || raw === undefined || raw === '') return [];
+    /*
+      `filter(Boolean)` is not decoration: the sentinels make the first and last
+      split members empty strings, and a vocabulary containing '' would render a
+      blank option that refuses when chosen.
+    */
+    return asText(raw, 'codes')
+      .split(',')
+      .filter((code) => code !== '');
+  }
+
+  /**
+   * Declare the codes a takedown of this type may cite.
+   *
+   * FOR THE RUNNER, not the application. `scripts/directories/apply.mjs` builds
+   * a directory from a JSON definition, and the vocabulary belongs there beside
+   * the states and the fee terms -- it is gated on the governing group's admin
+   * office, so it signs with the operator key like the rest of that script.
+   *
+   * REPLACES THE WHOLE SET. A vocabulary is a list, and an administrator editing
+   * one thinks in the list they want rather than the diff.
+   *
+   * CODES ARE LOWERCASE LETTERS, DIGITS AND HYPHENS -- no underscore. Not
+   * pre-validated here, because duplicating the rule means two places to get it
+   * wrong, but worth knowing why the chain refuses one: `_` is a
+   * single-character wildcard in the `LIKE` membership test, so a stored
+   * `foo_bar` would match a cited `fooXbar` and the vocabulary would admit words
+   * nobody declared.
+   *
+   * THE LIST IS THE CLIENT'S TO SUPPLY. Scope exclusion #1 of PS 26-3155 gives
+   * Pacific Pact the moderation rules; this is the mechanism that implements
+   * whatever they supply.
+   */
+  async setModerationReasons(typeId: bigint | number, codes: readonly string[]): Promise<string> {
+    return await this.client.write(
+      'set_type_moderation_reasons',
+      { $type_id: idOf(typeId), $codes: [...codes] },
+      { $type_id: intType }
+    );
+  }
+
   async setFee(
     typeId: bigint | number,
     durationDays: bigint | number,
